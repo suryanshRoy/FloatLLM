@@ -21,7 +21,7 @@ We use a three-tier system so the engine can adapt to your specific device:
 Usually, you have to download pre-shrunk models from the internet or do it on your high-end devices. FloatLLM changes that. Using AirLLM's layer-swapping logic, FloatLLM lets you take a massive 16-bit model and "shrink" it down directly on your low-end device without crashing your RAM. This means you stay completely offline and private, even while optimizing your models.
 
 ## 🙏 Acknowledgements
-A massive shoutout to the **[airllm](https://github.com/lyogavin/Anima/tree/main/airllm)** project. Their logic for layer-swapping is what makes many features possible!
+A massive shoutout to the **[airllm](https://github.com/lyogavin/airllm)** project. Their logic for layer-swapping is what makes many features possible!
 
 ## 🚀 Current Status
 **v0.1 - Groundwork**
