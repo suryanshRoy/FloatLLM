@@ -3,30 +3,37 @@ import platform
 import sys
 import logging
 import psutil
+import shutil
+import os
 
 # #CLI logging format
 logging.basicConfig(level=logging.INFO, format="[FloatLLM] %(message)s")
 
 def get_hardware_backend():
-    """Dynamically route the worload based on host hardware."""
+    """Dynamically route the workload based on host hardware."""
     try:
         import torch
         if torch.cuda.is_available():
-            return "cuda" #NVIDIA
+            return "cuda" # NVIDIA
         elif torch.backends.mps.is_available():
             return "mps" # for Apple silicon
         elif hasattr(torch, 'xpu') and torch.xpu.is_available():
             return "xpu" # Intel GPUs
         elif hasattr(torch, 'npu') and torch.npu.is_available():
             return "npu_ascend" # for Huawei 
+        elif hasattr(torch, 'is_vulkan_available') and torch.is_vulkan_available():
+            return "vulkan"
     except ImportError:
         pass # Pytorch not installed/needed for this run
 
     system = platform.system().lower()
     machine = platform.machine().lower()
 
-    if system == "linux" and ("aarch64" in machine or "arm" in machine):
-        return "native_arm" 
+    if system == "linux":
+        if shutil.which('vulkaninfo') or os.path.exists("//system/lib64/libvulkan.so"):
+            return "vulkan_kompute" # GPU backend for Linux/Android
+        elif ("aarch64" in machine or "arm" in machine):
+            return "native_arm"
     
     return "native_cpu" 
 
@@ -37,21 +44,60 @@ def get_ram_stats():
     free = mem_info.available / (1024*1024)
     return total, free
 
-def check_failsafe_thresold(current_ram_mb, crash_thresold_mb, model_size_mb, used_ram_mb=None, total_ram_mb=None, use_airllm=False, quantize_on_fly=False):
-    """Acts as a pre-flight dashboard and a runtime kill-switch"""
+def get_storage_stats(path="/"):
+    """Interrogates physical SSD/Hard Drives storage in Gigabytes."""
+    total_bytes, used_bytes, free_bytes = shutil.disk_usage(path)
+    total_gb = total_bytes / (1024**3)
+    free_gb = free_bytes / (1024**3) # Default physical free space
+    return total_gb, free_gb
+
+def check_failsafe_threshold(current_ram_mb, crash_threshold_mb, model_size_mb,
+                            total_storage_gb=None, free_storage_gb=None, used_ram_mb=None,
+                            total_ram_mb=None, use_airllm=False, quantize_on_fly=False, save_quantized=False,
+                            no_ram_protocol=False, override_storage=False, session_id='default', temp_chat=False):
+    """Monitors RAM limits, SSD limits, and provide the emergency escape menu."""
+
+    model_size_gb = model_size_mb / 1024
+    trusted_free_gb = free_storage_gb
+
+    # 1. Storage Override
+    if override_storage is not None:
+        trusted_free_gb = override_storage
+        logging.warning(f"\n Overriding UNIX limits. Trusting your input of {trusted_free_gb:.2f} GB.")
+        if total_storage_gb and trusted_free_gb > total_storage_gb:
+            logging.error(f"CRITICAL: Override ({trusted_free_gb} GB) exceeds total disk size ({total_storage_gb:.2f} GB). Halting.")
+            sys.exit(1)
+
+    # 2. DARWIN WARNING: For macOS device due to Purgeable space
+    elif platform.system().lower() == 'darwin' and free_storage_gb and model_size_gb > free_storage_gb:
+        logging.warning(f"\n⚠️ UNIX sees {free_storage_gb:.2f} GB. Model needs {model_size_gb:.2f} GB.")
+        logging.warning("macOS hides Purgeable space. If you have enough space in System Settings, run with: [--override-storage YOUR_GB]")
+
+
+    # 3. STORAGE INTERCEPT: Check if SSD can hold the model
+    if trusted_free_gb and model_size_gb > trusted_free_gb:
+        logging.error("\n" + "-"*80) 
+        logging.error("🚨 FloatLLM STORAGE FAILSAFE TRIGGERED")
+        logging.error(f"CRITICAL: Model requires {model_size_gb:.2f} GB, but only {trusted_free_gb:.2f} GB is free.")
+        logging.error("Action: Halting to prevent storage corruption.")
+        logging.error("-"*80 + "\n")
+        sys.exit(1)
 
     # 1. RUNTIME INTERCEPT: If. system hit thresolt, stop gracefully
-    if current_ram_mb <= crash_thresold_mb:
-        logging.error("\n" + "-"*100)
+    if current_ram_mb <= crash_threshold_mb:
+        logging.error("\n" + "-"*80)
         logging.error("🚨 FloatLLM OOM Failsafe triggered to stop crashing/freezzing of device.")
-        logging.error("-"*100)
-        logging.error(f"CRITICAL: Free RAM ({current_ram_mb:.2f} MB) hit the crash thresold ({crash_thresold_mb:.2f} MB).")
+        logging.error("-"*80)
+        logging.error(f"CRITICAL: Free RAM ({current_ram_mb:.2f} MB) hit the crash threshold ({crash_threshold_mb:.2f} MB).")
         logging.error(f"Target Model Size: {model_size_mb:.2f} MB")
         if used_ram_mb:
             logging.error(f"FloatLLM Consumed: {used_ram_mb:.2f} MB (Max Peak)")
         logging.error("Action: Halting execution gracefully. Model data safely flushed.")
-        logging.error("Next Run: Enable --use-airllm, or adjust --crash-thresold.")
-        logging.error("-"*100 + "\n")
+        if not use_airllm:
+            logging.error("Enable [--use-airllm], or adjust [--crash-threshold].") 
+        logging.error("For extreme offload: Enable [--no-ram-protocol] to dump KV Cache & Hidden States to SSD.")
+        logging.error("Or Compression: Enable [--quantize-on-fly] to compress weights in memory.")
+        logging.error("-"*80 + "\n")
         sys.exit(1) # Controlled exit prevents file corruption
 
     # 2. PRE-FLIGHT Report: If used_ram_mb is None, we haven't crashed, just reporting
@@ -61,12 +107,18 @@ def check_failsafe_thresold(current_ram_mb, crash_thresold_mb, model_size_mb, us
             logging.info(f"Host Total Ram       : {total_ram_mb:.2f} MB")
             logging.info(f"Host Used RAM        : {(total_ram_mb - current_ram_mb):.2f} MB")
         logging.info(f"Host Free Ram        : {current_ram_mb:.2f} MB")
+        if trusted_free_gb:
+            logging.info(f"Host Free Storage    : {trusted_free_gb:.2f} GB " + ("(OVERRIDEN)" if override_storage else ""))
         logging.info(f"Target Model Size    : {model_size_mb:.2f} MB")
-        logging.info(f"Kill Thresold        : {crash_thresold_mb:.2f} MB")
+        logging.info(f"Kill threshold       : {crash_threshold_mb:.2f} MB")
         logging.info("--- User Execution Blueprint ---")
         logging.info(f"AirLLM Swapping      : {'ENABLED' if use_airllm else 'DISABLED'}")
         logging.info(f"Live Quantization    : {'ENABLED' if quantize_on_fly else 'DISABLED'}")
-        logging.info("-"*100+"\n")
+        logging.info(f"AOT Quantization (Save): {'ACTIVE' if save_quantized else 'DISABLED'}")
+        logging.info(f"No-RAM Protocol (SSD): {'ACTIVE' if no_ram_protocol else 'DISABLED'}")
+        logging.info(f"Session ID           : [{session_id}]")
+        logging.info(f"Context Saving       : {'Temporary (Nuke on Exit)' if temp_chat else 'PERSISTENT (Saved to SSD)'}")
+        logging.info("-"*80+"\n")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FloatLLM Engine")
@@ -75,8 +127,13 @@ if __name__ == "__main__":
     parser.add_argument("--hardware", type=str, default="auto", help="Force backend (e.g., mps, native_arm)")
     parser.add_argument("--use-airllm", action="store_true", help="Explict consent for layer-swapping")
     parser.add_argument("--quantize-on-fly", action="store_true", help="Explict consent to quantize weights")
-    parser.add_argument("--crash-thresold", type=float, default=200.0, help="Failtsafe buffer in MB")
+    parser.add_argument("--no-ram-protocol", action="store_true", help="Offload all Hidden States and KV Cache to SSD")
+    parser.add_argument("--session-id", type=str, default="default_chat", help="Name of the chat to save/resume KV Cache")
+    parser.add_argument("--temp-chat", action="store_true", help="Delete the KV Cache on exit")
+    parser.add_argument("--override-storage", type=float, default=None, help="Manually override strict UNIX storage limit in GB")
+    parser.add_argument("--crash-threshold", type=float, default=200.0, help="Failsafe buffer in MB to stop execution before OOM is triggered.")
     parser.add_argument("--model-size", type=float, default=4500.0, help="Mock model size in MB for testing")
+    parser.add_argument("--save-quantized", action="store_true", help="Save the compressed model to SSD so original can be deleted.")
 
     args = parser.parse_args()
 
@@ -86,13 +143,21 @@ if __name__ == "__main__":
 
     # Gather System Memory Facts
     total_ram, free_ram = get_ram_stats()
+    total_storage, free_storage = get_storage_stats()
 
     #Fire the Pre-Flight Dashboard with ALL variables
-    check_failsafe_thresold(current_ram_mb=free_ram,
-                            crash_thresold_mb=args.crash_thresold,
+    check_failsafe_threshold(current_ram_mb=free_ram,
+                            crash_threshold_mb=args.crash_threshold,
                             model_size_mb=args.model_size,
+                            total_storage_gb=total_storage,
+                            free_storage_gb=free_storage,
                             total_ram_mb=total_ram,
                             use_airllm=args.use_airllm,
-                            quantize_on_fly=args.quantize_on_fly)
+                            quantize_on_fly=args.quantize_on_fly,
+                            save_quantized=args.save_quantized,
+                            no_ram_protocol=args.no_ram_protocol,
+                            override_storage=args.override_storage,
+                            session_id=args.session_id,
+                            temp_chat=args.temp_chat)
     
     logging.info("Blueprint validated. Proceeding to Model Loader...")
