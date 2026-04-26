@@ -44,9 +44,10 @@ def get_ram_stats():
     free = mem_info.available / (1024*1024)
     return total, free
 
-def get_storage_stats(path="/"):
+def get_storage_stats():
     """Interrogates physical SSD/Hard Drives storage in Gigabytes."""
-    total_bytes, used_bytes, free_bytes = shutil.disk_usage(path)
+    real_path = os.path.expanduser("~")
+    total_bytes, used_bytes, free_bytes = shutil.disk_usage(real_path)
     total_gb = total_bytes / (1024**3)
     free_gb = free_bytes / (1024**3) # Default physical free space
     return total_gb, free_gb
