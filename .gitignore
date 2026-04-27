@@ -1,0 +1,26 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+
+# Compiled C++ Binaries (Users must compile their own)
+*.dylib
+*.so
+*.so
+*.dll
+*.exe
+
+#Large AI Model Files
+*.gguf
+*.ggml
+*.safetensors
+*.bin
+
+# OS Generated Files
+.DS_Store
+Thumbs.db

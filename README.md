@@ -1,28 +1,56 @@
-# FloatLLM 🚀 (Work in Progress)
+# FloatLLM 🚀
 
-FloatLLM is a custom project I'm building to run Large Language Models (LLMs) completely offline on almost any device. Right now, running local AI usually requires expensive graphics cards with tons of memory. I want to fix that by making an engine that adjusts to whatever device it's running on, even if it doesn't have much RAM. By combining the speed of the **GGUF** format with the memory-saving tricks of **AirLLM**, this project allows you to run massive AI models even if you have very little RAM. 
+**A metal engine, hardware-agnostic Large Language Model (LLM) inference engine designed to run massive models on heavily memory-constrained edge devices as well as to act like an safety feature to run LLM locally.**
 
-## 🏗️ Core Architecture
+FloatLLM is built for a fundamental shift in local AI execution: **Dynamic Zero-Copy Memory Chunking**. 
 
-The system is designed to be universally scalable and relies on three main pillars to give users total control and flexibility:
+## 🚀 The Architectural Shift
+Originally, handling models larger than host RAM relied on static, layer-by-layer disk swapping (similar to traditional AirLLM implementations). However, static swapping creates massive I/O bottlenecks. 
 
-### 1. The Core: Moving to GGUF 
-FloatLLM uses **GGUF** as its primary local format.
-* **Plug-and-play:** All the model data is stored in one file.
-* **Speed & Flexibility:** It allows for instant loading and runs natively across almost all hardware architectures and accelerators, including **ARM, MPS (Apple Silicon), CUDA, NPUs, XPUs, and standard CPUs/GPUs**.
+FloatLLM abandons static swapping. Instead, it utilizes OS-level hardware interrogation to calculate exact, real-time memory boundaries, slicing standard `.gguf` neural network weights into mathematically perfect execution blocks. By leveraging native `mmap` (memory-mapping), it creates a zero-copy hardware bridge, streaming gigabytes of tensor data from SSD to RAM at bare-metal speeds without ever triggering an Out-of-Memory (OOM) panic.
 
-### 2. The Engine: Hybrid Inference Strategy
-We use a three-tier system so the engine can adapt to your specific device:
-* **⚡ Turbo Mode:** Uses compressed (4-bit/6-bit) files for high-speed, offline chatting. Great for everyday use on laptops and phones.
-* **🧠 Pro Mode:** Uses "Smart Quantization." It keeps the important parts of the model highly accurate while compressing the less important parts, giving you a perfect balance of speed and accuracy.
-* **🐢 Ultra Mode (AirLLM-Style):** For when you need 100% accuracy. It reads the massive, uncompressed 16-bit model directly from your **SSD layer-by-layer**. It's slower, but it lets you run massive 70B models on a low-end device with just 4GB of RAM!
+This allows massive architectures (like Meta Llama 3 or any model) to execute natively on anything from an Apple Silicon Mac to a non-rooted Android device running terminals, completely offline.
 
-### 3. The "Freedom" Feature: Local Quantization
-Usually, you have to download pre-shrunk models from the internet or do it on your high-end devices. FloatLLM changes that. Using AirLLM's layer-swapping logic, FloatLLM lets you take a massive 16-bit model and "shrink" it down directly on your low-end device without crashing your RAM. This means you stay completely offline and private, even while optimizing your models.
+---
 
-## 🙏 Acknowledgements
-A massive shoutout to the **[airllm](https://github.com/lyogavin/airllm)** project. Their logic for layer-swapping is what makes many features possible!
+## 🏗️ Project Architecture & Status
 
-## 🚀 Current Status
-**v0.1 - Groundwork**
-Currently laying down the foundations for the GGUF integration and the 3-tier engine strategy. 
+FloatLLM is being developed in these steps:
+
+### The Brain (Hardware Router) - `floatllm_router.py`
+The master entry point. The router dynamically interrogates the host machine's hardware, evaluating total RAM, free RAM, and SSD capacity. 
+* **Hardware Agnostic:** Automatically routes compute workloads to Apple MPS, Vulkan, native ARM, or CUDA based on host detection.
+* **Failsafe Math:** Calculates strict safety thresholds, ensuring a configurable buffer (default 20%) is always left free for the operating system and dynamic KV Cache context.
+* **Absolute Control:** Allows users to manually force RAM limits (e.g., `--ram-limit 1`) to run multi-gigabyte models through ultra-tight memory constraints.
+
+### ✅ The Hands (Memory Loader) - `floatllm_loader.py`
+The physical memory mapper. 
+* **Metadata Parsing:** Uses the official `gguf` library to scan the model header, discovering exact tensor byte offsets without loading the massive payload.
+* **Dynamic Slicing:** Takes the safety limits from Phase 1 and mathematically groups hundreds of tensors into safe execution blocks.
+* **Zero-Copy Streaming:** Utilizes a read-only `mmap` bridge to swap execution chunks in and out of RAM at maximum SSD read speeds. 
+
+### 🚧 The Heart (Inference Engine) - *In Development*
+Currently transitioning into Phase 3. This phase will introduce the `ctypes` Compute Bridge, connecting the Python memory logic to a bare-metal C/C++ backend for high-speed matrix multiplication. It will also introduce the dynamic KV Cache Manager to securely page conversation history to the SSD during long contexts.
+
+### ⏳ The Voice (Tokenizer & UI) - *Planned*
+The final pipeline to convert raw tensor math back into human-readable text and stream it efficiently to the terminal interface.
+
+---
+
+## 🛠️ Usage 
+
+Currently we can execute the mapping pipeline to watch the engine interrogate your hardware and slice your model.
+FloatLLM relies on a custom C++ backend to execute bare-metal matrix operations. Before running the router, you must compile the C++ compute bridge into a shared library natively on your machine.
+
+**For macOS:**
+```bash
+clang++ -shared -fPIC -o floatllm_compute.dylib floatllm_compute.cpp
+```
+**For Linux**
+```bash
+clang++ -shared -o floatllm_compute.dil floatllm_compute.cpp
+```
+**For Windows**
+```bash
+clang++ -shared -o floatllm_compute.dil floatllm_compute.cpp
+```

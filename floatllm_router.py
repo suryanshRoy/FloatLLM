@@ -54,8 +54,9 @@ def get_storage_stats():
 
 def check_failsafe_threshold(current_ram_mb, crash_threshold_mb, model_size_mb,
                             total_storage_gb=None, free_storage_gb=None, used_ram_mb=None,
-                            total_ram_mb=None, use_airllm=False, quantize_on_fly=False, save_quantized=False,
-                            no_ram_protocol=False, override_storage=False, session_id='default', temp_chat=False):
+                            total_ram_mb=None, quantize_on_fly=False, save_quantized=False,
+                            no_ram_protocol=False, override_storage=None, session_id='default', temp_chat=False,
+                            ram_limit=None, ram_buffer=0.20):
     """Monitors RAM limits, SSD limits, and provide the emergency escape menu."""
 
     model_size_gb = model_size_mb / 1024
@@ -94,47 +95,58 @@ def check_failsafe_threshold(current_ram_mb, crash_threshold_mb, model_size_mb,
         if used_ram_mb:
             logging.error(f"FloatLLM Consumed: {used_ram_mb:.2f} MB (Max Peak)")
         logging.error("Action: Halting execution gracefully. Model data safely flushed.")
-        if not use_airllm:
-            logging.error("Enable [--use-airllm], or adjust [--crash-threshold].") 
+        logging.error("Adjust [--crash-threshold] or increase [--ram-limit] for more safety.") 
         logging.error("For extreme offload: Enable [--no-ram-protocol] to dump KV Cache & Hidden States to SSD.")
         logging.error("Or Compression: Enable [--quantize-on-fly] to compress weights in memory.")
+        logging.error("Or Quantize the model permanently using --save-quantized to run the saved quantize model.")
         logging.error("-"*80 + "\n")
         sys.exit(1) # Controlled exit prevents file corruption
 
     # 2. PRE-FLIGHT Report: If used_ram_mb is None, we haven't crashed, just reporting
     elif used_ram_mb is None:
+        safe_ram_mb = (current_ram_mb * (1.0 - ram_buffer)) - crash_threshold_mb
+        safe_ram_mb = max(1.0, safe_ram_mb) # To prevent negative numbers on tiny devices
+        if ram_limit:
+            ram_limit_mb = ram_limit * 1024
+            allowed_ram_mb = min(safe_ram_mb, ram_limit_mb)
+        else:
+            allowed_ram_mb = safe_ram_mb
+
         logging.info("\n--- Pre-Flight Memory Dashboard ---")
         if total_ram_mb:
             logging.info(f"Host Total Ram       : {total_ram_mb:.2f} MB")
             logging.info(f"Host Used RAM        : {(total_ram_mb - current_ram_mb):.2f} MB")
         logging.info(f"Host Free Ram        : {current_ram_mb:.2f} MB")
+        logging.info(f"Allowed RAM (Chunk)  : {allowed_ram_mb:.2f} MB (Buffer: {ram_buffer*100:.0f}%)")
         if trusted_free_gb:
             logging.info(f"Host Free Storage    : {trusted_free_gb:.2f} GB " + ("(OVERRIDEN)" if override_storage else ""))
         logging.info(f"Target Model Size    : {model_size_mb:.2f} MB")
         logging.info(f"Kill threshold       : {crash_threshold_mb:.2f} MB")
         logging.info("--- User Execution Blueprint ---")
-        logging.info(f"AirLLM Swapping      : {'ENABLED' if use_airllm else 'DISABLED'}")
         logging.info(f"Live Quantization    : {'ENABLED' if quantize_on_fly else 'DISABLED'}")
         logging.info(f"AOT Quantization (Save): {'ACTIVE' if save_quantized else 'DISABLED'}")
         logging.info(f"No-RAM Protocol (SSD): {'ACTIVE' if no_ram_protocol else 'DISABLED'}")
         logging.info(f"Session ID           : [{session_id}]")
-        logging.info(f"Context Saving       : {'Temporary (Nuke on Exit)' if temp_chat else 'PERSISTENT (Saved to SSD)'}")
+        logging.info(f"Context Saving       : {'Temporary (Delete on Exit)' if temp_chat else 'PERSISTENT (Saved to SSD)'}")
         logging.info("-"*80+"\n")
+
+        return allowed_ram_mb
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FloatLLM Engine")
 
     # Freedom & Failsafe Flags
     parser.add_argument("--hardware", type=str, default="auto", help="Force backend (e.g., mps, native_arm)")
-    parser.add_argument("--use-airllm", action="store_true", help="Explict consent for layer-swapping")
     parser.add_argument("--quantize-on-fly", action="store_true", help="Explict consent to quantize weights")
     parser.add_argument("--no-ram-protocol", action="store_true", help="Offload all Hidden States and KV Cache to SSD")
     parser.add_argument("--session-id", type=str, default="default_chat", help="Name of the chat to save/resume KV Cache")
     parser.add_argument("--temp-chat", action="store_true", help="Delete the KV Cache on exit")
     parser.add_argument("--override-storage", type=float, default=None, help="Manually override strict UNIX storage limit in GB")
     parser.add_argument("--crash-threshold", type=float, default=200.0, help="Failsafe buffer in MB to stop execution before OOM is triggered.")
-    parser.add_argument("--model-size", type=float, default=4500.0, help="Mock model size in MB for testing")
+    parser.add_argument("--model-path", type=str, required=True, help="Path to the .gguf model file")
     parser.add_argument("--save-quantized", action="store_true", help="Save the compressed model to SSD so original can be deleted.")
+    parser.add_argument("--ram-limit", type=float, default=None, help="Hard adjustment on RAM usage in GB")
+    parser.add_argument("--ram-buffer", type=float, default=0.20, help="Percentage of RAM to reserve for KV cache/OS (default 0.20)")
 
     args = parser.parse_args()
 
@@ -146,19 +158,40 @@ if __name__ == "__main__":
     total_ram, free_ram = get_ram_stats()
     total_storage, free_storage = get_storage_stats()
 
-    #Fire the Pre-Flight Dashboard with ALL variables
-    check_failsafe_threshold(current_ram_mb=free_ram,
+    if not os.path.exists(args.model_path):
+        logging.error(f"Model file not found at {args.model_path}")
+        sys.exit(1)
+
+    actual_model_size_mb = os.path.getsize(args.model_path) / (1024**2)
+
+    # Pre-Flight Dashboard with ALL variables
+    calculated_limit = check_failsafe_threshold(
+                            current_ram_mb=free_ram,
                             crash_threshold_mb=args.crash_threshold,
-                            model_size_mb=args.model_size,
+                            model_size_mb=actual_model_size_mb,
                             total_storage_gb=total_storage,
                             free_storage_gb=free_storage,
                             total_ram_mb=total_ram,
-                            use_airllm=args.use_airllm,
                             quantize_on_fly=args.quantize_on_fly,
                             save_quantized=args.save_quantized,
                             no_ram_protocol=args.no_ram_protocol,
                             override_storage=args.override_storage,
                             session_id=args.session_id,
-                            temp_chat=args.temp_chat)
+                            temp_chat=args.temp_chat,
+                            ram_limit=args.ram_limit,
+                            ram_buffer=args.ram_buffer)
     
-    logging.info("Blueprint validated. Proceeding to Model Loader...")
+    logging.info("Blueprint validated. Proceeding to Model Loader...\n")
+
+    # Import the mapping Engine
+    from floatllm_loader import FloatLLM_Loader
+
+    loader = FloatLLM_Loader(model_path=args.model_path, allowed_ram_mb=calculated_limit)
+    tensor_map = loader.parse_gguf_metadata()
+    loader.build_dynamic_chunks(tensor_map)
+
+    logging.info("-"*80)
+    for chunk in loader.chunks:
+        loader.stream_chunk(chunk["id"])
+    logging.info("-"*80)
+    logging.info("Engine successfully mapped.")
