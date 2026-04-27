@@ -48,7 +48,7 @@ clang++ -shared -fPIC -o floatllm_compute.dylib floatllm_compute.cpp
 ```
 **For Linux**
 ```bash
-clang++ -shared -o floatllm_compute.dil floatllm_compute.so
+clang++ -shared -o floatllm_compute.so floatllm_compute.cpp
 ```
 **For Windows**
 ```bash
