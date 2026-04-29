@@ -7,10 +7,11 @@ import platform
 logging.basicConfig(level=logging.INFO, format="[FloatLLM] %(message)s")
 
 class FloatLLM_Loader:
-    def __init__(self, model_path, allowed_ram_mb):
+    def __init__(self, model_path, allowed_ram_mb, backend_name):
         """Initializes the loader with stric RAM boundaries from the hardware router."""
         self.model_path = model_path
         self.allowed_ram_bytes = int(allowed_ram_mb * (1024 ** 2))
+        self.backend_name = backend_name
 
         if not os.path.exists(self.model_path):
             logging.error(f"CRITICAL: Model file not found at {self.model_path}")
@@ -38,11 +39,20 @@ class FloatLLM_Loader:
         self.cpp_engine = ctypes.CDLL(lib_path)
 
         # 2. Exact C++ argument so Python doesn't crash the memory
-        self.cpp_engine.init_compute_engine.argtypes = [ctypes.c_char_p]
-        self.cpp_engine.execute_tensor_chunk.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+        self.cpp_engine.init_compute_engine.argtypes = [ctypes.c_char_p, ctypes.c_int]
+        # Send name, true type, pointer, and all 4 dimensions
+        self.cpp_engine.execute_tensor_chunk.argtypes = [
+            ctypes.c_char_p, ctypes.c_int,
+            ctypes.c_void_p, ctypes.c_int64,
+            ctypes.c_int64, ctypes.c_int64,
+            ctypes.c_int64,  ctypes.c_int]
 
-        # 3. Fire the wake-up signal
-        self.cpp_engine.init_compute_engine(b"mps_testing")
+        # Graph execution signal 
+        self.cpp_engine.execute_graph_test.argtypes = []
+
+    def wake_engine(self, total_tensors):
+        """Fires the wake-up signal safely after metadata is parsed"""
+        self.cpp_engine.init_compute_engine(self.backend_name.encode('utf-8'), total_tensors)
 
     def parse_gguf_metadata(self):
         """Scans the GGUF file header to find exact tensor byte offsets."""
@@ -50,15 +60,21 @@ class FloatLLM_Loader:
 
         logging.info(f"Scanning GGUF metadata for building {self.model_path}...")
 
-        # Simulating a modele with 500MB layers (e.g., standard 7B model layers)
         reader = gguf.GGUFReader(self.model_path)
 
         tensors = []
         for tensor in reader.tensors:
+            shape = list(tensor.shape)
+
+            while len(shape) < 4:
+                shape.append(1)
+
             tensors.append({
                 "name": tensor.name,
-                "offset": tensor.data_offset, # The exact starting byte on the SSD 
-                "size": tensor.n_bytes # The exact size of the tensor
+                "type":  int(tensor.tensor_type), #Quantization type (e.g. F16, F32, Q4)
+                "offset": tensor.data_offset, 
+                "size": tensor.n_bytes,
+                "shape":  shape
             })
         logging.info(f"Discovered {len(tensors)} individual tensors in the model architecture.")
         return tensors
@@ -115,7 +131,14 @@ class FloatLLM_Loader:
             for tensor in target_chunk["tensors"]:
                 # Calculate the exact RAM address for this specific tensor
                 tensor_ptr = base_ptr + tensor["offset"]
-                self.cpp_engine.execute_tensor_chunk(tensor_ptr, tensor["size"], chunk_id)
+                tensor_name_bytes = tensor["name"].encode("utf-8")
+                ne0, ne1, ne2, ne3 = tensor["shape"]
+
+                self.cpp_engine.execute_tensor_chunk(
+                    tensor_name_bytes, ctypes.c_int(tensor["type"]),
+                    ctypes.c_void_p(tensor_ptr), ctypes.c_int64(ne0),
+                    ctypes.c_int64(ne1), ctypes.c_int64(ne2), ctypes.c_int64(ne3),
+                    ctypes.c_int(chunk_id))
             
             mmapped_file.close()
         

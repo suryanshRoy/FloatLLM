@@ -1,26 +1,41 @@
-# Python caches
+# Python caches & packaging
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
+dist/
 
 # Virtual Environments
 .venv/
 venv/
 ENV/
 
-# Compiled C++ Binaries (Users must compile their own)
+# Compiled C++ Binaries & Build Artifacts (Users must compile their own)
 *.dylib
-*.so
 *.so
 *.dll
 *.exe
+*.o
+*.obj
+build/
+CMakeCache.txt
+CMakeFiles/
 
-#Large AI Model Files
+# Large AI Model Files
 *.gguf
 *.ggml
 *.safetensors
 *.bin
 
-# OS Generated Files
+# Logs and Environments
+*.log
+.env
+
+# OS & Editor Generated Files
 .DS_Store
 Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
