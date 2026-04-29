@@ -186,8 +186,9 @@ if __name__ == "__main__":
     # Import the mapping Engine
     from floatllm_loader import FloatLLM_Loader
 
-    loader = FloatLLM_Loader(model_path=args.model_path, allowed_ram_mb=calculated_limit)
+    loader = FloatLLM_Loader(model_path= args.model_path, allowed_ram_mb=calculated_limit, backend_name = backend)
     tensor_map = loader.parse_gguf_metadata()
+    loader.wake_engine(len(tensor_map))
     loader.build_dynamic_chunks(tensor_map)
 
     logging.info("-"*80)
@@ -195,3 +196,4 @@ if __name__ == "__main__":
         loader.stream_chunk(chunk["id"])
     logging.info("-"*80)
     logging.info("Engine successfully mapped.")
+    loader.cpp_engine.execute_graph_test()
