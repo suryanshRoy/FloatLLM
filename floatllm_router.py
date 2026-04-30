@@ -6,7 +6,7 @@ import psutil
 import shutil
 import os
 
-# #CLI logging format
+# CLI logging format
 logging.basicConfig(level=logging.INFO, format="[FloatLLM] %(message)s")
 
 def get_hardware_backend():
@@ -35,7 +35,7 @@ def get_hardware_backend():
         elif ("aarch64" in machine or "arm" in machine):
             return "native_arm"
     
-    return "native_cpu" 
+    return "cpu" 
 
 def get_ram_stats():
     """Cross-platform hardware interrogation."""
@@ -85,10 +85,10 @@ def check_failsafe_threshold(current_ram_mb, crash_threshold_mb, model_size_mb,
         logging.error("-"*80 + "\n")
         sys.exit(1)
 
-    # 1. RUNTIME INTERCEPT: If. system hit thresolt, stop gracefully
+    # 4. RUNTIME INTERCEPT: If system hit threshold, stop gracefully
     if current_ram_mb <= crash_threshold_mb:
         logging.error("\n" + "-"*80)
-        logging.error("🚨 FloatLLM OOM Failsafe triggered to stop crashing/freezzing of device.")
+        logging.error("🚨 FloatLLM OOM Failsafe triggered to stop crashing/freezing of device.")
         logging.error("-"*80)
         logging.error(f"CRITICAL: Free RAM ({current_ram_mb:.2f} MB) hit the crash threshold ({crash_threshold_mb:.2f} MB).")
         logging.error(f"Target Model Size: {model_size_mb:.2f} MB")
@@ -100,12 +100,12 @@ def check_failsafe_threshold(current_ram_mb, crash_threshold_mb, model_size_mb,
         logging.error("Or Compression: Enable [--quantize-on-fly] to compress weights in memory.")
         logging.error("Or Quantize the model permanently using --save-quantized to run the saved quantize model.")
         logging.error("-"*80 + "\n")
-        sys.exit(1) # Controlled exit prevents file corruption
+        sys.exit(1)
 
-    # 2. PRE-FLIGHT Report: If used_ram_mb is None, we haven't crashed, just reporting
+    # 5. PRE-FLIGHT Report
     elif used_ram_mb is None:
         safe_ram_mb = (current_ram_mb * (1.0 - ram_buffer)) - crash_threshold_mb
-        safe_ram_mb = max(1.0, safe_ram_mb) # To prevent negative numbers on tiny devices
+        safe_ram_mb = max(1.0, safe_ram_mb) 
         if ram_limit:
             ram_limit_mb = ram_limit * 1024
             allowed_ram_mb = min(safe_ram_mb, ram_limit_mb)
@@ -136,7 +136,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FloatLLM Engine")
 
     # Freedom & Failsafe Flags
-    parser.add_argument("--hardware", type=str, default="auto", help="Force backend (e.g., mps, native_arm)")
+    parser.add_argument("--hardware", type=str, default="auto", help="Force backend override (e.g., cuda, opencl, vulkan, metal, rocm, oneapi, cpu)")
     parser.add_argument("--quantize-on-fly", action="store_true", help="Explict consent to quantize weights")
     parser.add_argument("--no-ram-protocol", action="store_true", help="Offload all Hidden States and KV Cache to SSD")
     parser.add_argument("--session-id", type=str, default="default_chat", help="Name of the chat to save/resume KV Cache")
@@ -151,10 +151,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Initialize Hardware
-    backend = args.hardware.lower() if args.hardware.lower() != "auto" else get_hardware_backend() 
+    backend = args.hardware.lower() 
     logging.info(f"Hardware Router engaged: Backend -> [{backend.upper()}]")
 
-    # Gather System Memory Facts
     total_ram, free_ram = get_ram_stats()
     total_storage, free_storage = get_storage_stats()
 
@@ -164,7 +163,6 @@ if __name__ == "__main__":
 
     actual_model_size_mb = os.path.getsize(args.model_path) / (1024**2)
 
-    # Pre-Flight Dashboard with ALL variables
     calculated_limit = check_failsafe_threshold(
                             current_ram_mb=free_ram,
                             crash_threshold_mb=args.crash_threshold,
@@ -183,7 +181,6 @@ if __name__ == "__main__":
     
     logging.info("Blueprint validated. Proceeding to Model Loader...\n")
 
-    # Import the mapping Engine
     from floatllm_loader import FloatLLM_Loader
 
     loader = FloatLLM_Loader(model_path= args.model_path, allowed_ram_mb=calculated_limit, backend_name = backend)
@@ -196,4 +193,7 @@ if __name__ == "__main__":
         loader.stream_chunk(chunk["id"])
     logging.info("-"*80)
     logging.info("Engine successfully mapped.")
+    
+    # Execute Math test once, then shut down gracefully
     loader.cpp_engine.execute_graph_test()
+    loader.shutdown_engine()
