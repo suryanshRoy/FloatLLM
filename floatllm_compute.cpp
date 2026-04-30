@@ -2,10 +2,34 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <algorithm>
+#include <cctype>
+#include <vector>
 
 #include "ggml.h"
 #include "ggml-backend.h"
 #include "ggml-alloc.h"
+
+// Bug fix
+#ifdef __APPLE__
+extern "C" ggml_backend_t ggml_backend_metal_init(void);
+#endif
+
+// Map user flags to exact GGML backend name
+std::string resolve_backend_name(const std::string& input_name) {
+    std::string lower_name = input_name;
+    std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(), ::tolower);
+
+    if (lower_name == "cuda") return "CUDA";
+    if (lower_name == "metal" || lower_name == "mps") return "Metal";
+    if (lower_name == "vulkan") return "Vulkan";
+    if (lower_name == "opencl") return "OpenCL";
+    if (lower_name == "rocm" || lower_name == "hip") return "CUDA"; // ggml maps HIP to CUDA interface internally
+    if (lower_name == "oneapi" || lower_name == "sycl") return "SYCL";
+    if (lower_name == "directx" || lower_name == "kompute") return "Kompute";
+
+    return input_name; // fallback
+}
 
 extern "C" {
     // pointer to hold math engine's state & memory map
@@ -19,22 +43,36 @@ extern "C" {
 
     // 1. Initialization socket
     void init_compute_engine(const char* backend_name, int total_tensors) {
-        std::string target_hw(backend_name);
+        std::string raw_hw(backend_name);
+        std::string target_hw = resolve_backend_name(raw_hw);
+
         std::cout << "[FloatLLM(C++)] Hardware Router active. Requested: [" << target_hw << "]" <<std::endl;
 
-        // Scan all the available drivers
+        // Scan all the compiled available drivers
         ggml_backend_load_all();
+        
         // dynamically assign the physical hardware
-        if (target_hw == "cpu" || target_hw == "CPU") {
+        if (target_hw == "Metal") {
+            #ifdef __APPLE__
+            backend = ggml_backend_metal_init();
+            #else
+            std::cout << "[FloatLLM(C++)] Warning: Metal requested on non-Apple hardware." << std::endl;
+            #endif
+        }
+        else if (raw_hw == "cpu" || raw_hw == "native_arm") {
             backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, NULL);
         }
+        else if (raw_hw == "best" || raw_hw == "auto") {
+            backend = ggml_backend_init_best(); // for auto default behaviour
+        }
         else {
-            backend = ggml_backend_init_best();
+            // Automatically handle Metal, Vulkan, CUDA, etc.
+            backend = ggml_backend_init_by_name(target_hw.c_str(), NULL);
         }
 
         // If the requested GPU isn't available/installed
         if (backend == nullptr) {
-            std::cout << "[FloatLLM(C++)] Target GPU unavailable. Falling back to CPU." << std::endl;
+            std::cout << "[FloatLLM(C++)] Target hardware" << target_hw << " unavailable. Falling back to CPU." << std::endl;
             backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, NULL);
         }
 
@@ -65,11 +103,10 @@ extern "C" {
         }
     }
 
-    // 2. The execution socket with 4D shape
+    // 2. The execution socket with dynamic shapes
     void execute_tensor_chunk(const char* tensor_name, int tensor_type, void* raw_memory_pointer, int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3, int chunk_id) {
 
-        
-        // 4D model architecture
+        //  Model architecture
         struct ggml_tensor* tensor = ggml_new_tensor_4d(ctx, (enum ggml_type)tensor_type, ne0, ne1, ne2,ne3);
         ggml_set_name(tensor, tensor_name); 
 
@@ -87,26 +124,78 @@ extern "C" {
     void execute_graph_test() {
         std::cout << "[FloatLLM(C++)] Assembling computation graph..." << std::endl;
 
+        if (tensor_registry.empty()) {
+            std::cout << "[FloatLLM(C++)] Not enough tensors mapped." << std::endl;
+            return;
+        }
+
+        // Dynamically locate a 2D tensor for GPU matrix math
+        struct ggml_tensor* model_weight = nullptr;
+        for (auto const& pair : tensor_registry){
+            if (pair.second->ne[1] > 1){
+                model_weight = pair.second;
+                break;
+            }
+        } 
+
+        if (model_weight == nullptr){
+            std::cout << "[FloatLLM(C++)] No suitable 2D tensor found for matrix math." << std::endl;
+            return;
+        }
+
         // tiny localized context for graph's instructions (1MB)
         struct ggml_init_params params = {
             /* .mem_size   = */ 1024 * 1024,
             /* .mem_buffer = */ NULL,
             /* .no_alloc.  = */ true,
         };
-        struct ggml_context * graph_ctx = ggml_init(params);
 
+        struct ggml_context * graph_ctx = ggml_init(params);
         struct ggml_cgraph * gf = ggml_new_graph(graph_ctx);
 
         // --- Math Pipeline ---
+        struct ggml_tensor* dummy_f32_input = ggml_new_tensor_2d(graph_ctx, GGML_TYPE_F32, model_weight->ne[0], 1);
+        ggml_set_name(dummy_f32_input, "dummy_user_input");
+
+        struct ggml_tensor* math_result = ggml_mul_mat(graph_ctx, model_weight, dummy_f32_input);
+        ggml_build_forward_expand(gf, math_result);
+
+        // Detach CPU RAM pointer for safe Hardware VRAM execution
+        void* ram_ram_pointer = model_weight->data;
+        model_weight->data = nullptr;
+
         // Tell the Allocator to reserve VRAM on the GPU/CPU for the math operations
         ggml_gallocr_alloc_graph(allocr, gf);
 
-        std::cout << "[FloatLLM(C++)] Graph memory reserved. Pushing data to compute cores..." << std::endl;
-        
+        // Upload the Zero-Copy Python data into the hardware buffer
+        ggml_backend_tensor_set(model_weight, ram_ram_pointer, 0, ggml_nbytes(model_weight));
+        std::vector<float> dummy_data(model_weight->ne[0], 1.0f);
+        ggml_backend_tensor_set(dummy_f32_input, dummy_data.data(), 0, dummy_data.size() * sizeof(float));
+
+        // Execute math across any supported hardware (CUDA, Vulkan, Metal, CPU) :---)
         ggml_backend_graph_compute(backend, gf);
 
-        std::cout << "[Float(C++)] Matrix math complete. Target hardware stabilized." << std::endl;
+        std::cout << "[Float(C++)] Matrix math complete. Output generated successfully." << std::endl;
 
         ggml_free(graph_ctx);
+    }
+
+    // 4. Shutdown to prevent Memory Leaks
+    void shutdown_compute_engine() {
+        std::cout << "[FloatLLM(C++)] Releasing hardware locks..." << std::endl;
+        if (allocr) {
+            ggml_gallocr_free(allocr);
+            allocr = nullptr;
+        }
+        if (ctx) {
+            ggml_free(ctx);
+            ctx = nullptr;
+        }
+        if (backend) {
+            ggml_backend_free(backend);
+            backend = nullptr;
+        }
+        tensor_registry.clear();
+        std::cout << "[FloatLLM(C++)] Engine shut down. VRAM/RAM cleared safely." << std::endl;
     }
 }

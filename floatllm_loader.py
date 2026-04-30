@@ -8,7 +8,7 @@ logging.basicConfig(level=logging.INFO, format="[FloatLLM] %(message)s")
 
 class FloatLLM_Loader:
     def __init__(self, model_path, allowed_ram_mb, backend_name):
-        """Initializes the loader with stric RAM boundaries from the hardware router."""
+        """Initializes the loader with strict RAM boundaries from the hardware router."""
         self.model_path = model_path
         self.allowed_ram_bytes = int(allowed_ram_mb * (1024 ** 2))
         self.backend_name = backend_name
@@ -19,6 +19,12 @@ class FloatLLM_Loader:
         
         self.file_size = os.path.getsize(self.model_path)
         self.chunks = []
+        
+        # --- FIX: Prevent Garbage Collection of Memory Maps ---
+        # We must keep the file objects and mmaps alive here. If they close, 
+        # the OS reclaims the RAM, and the C++ engine gets a dangling pointer.
+        self.active_files = [] 
+        self.active_mmaps = []
 
         # --- C++ COMPUTE BRIDGE WAKE-UP ---
         # 1. Locate and load the compiled file based on user's OS 
@@ -119,27 +125,45 @@ class FloatLLM_Loader:
             return None
         
         logging.info(f"Streaming Chunk {chunk_id}/{len(self.chunks)} -> RAM [{target_chunk['total_size_mb']:.2f} MB...]")
-        with open(self.model_path, "rb") as f:
-            mmapped_file = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-
-            c_obj = ctypes.py_object(mmapped_file)
-            address = ctypes.c_void_p()
-            length = ctypes.c_ssize_t()
-            ctypes.pythonapi.PyObject_AsReadBuffer(c_obj, ctypes.byref(address), ctypes.byref(length))
-            base_ptr = address.value
-
-            for tensor in target_chunk["tensors"]:
-                # Calculate the exact RAM address for this specific tensor
-                tensor_ptr = base_ptr + tensor["offset"]
-                tensor_name_bytes = tensor["name"].encode("utf-8")
-                ne0, ne1, ne2, ne3 = tensor["shape"]
-
-                self.cpp_engine.execute_tensor_chunk(
-                    tensor_name_bytes, ctypes.c_int(tensor["type"]),
-                    ctypes.c_void_p(tensor_ptr), ctypes.c_int64(ne0),
-                    ctypes.c_int64(ne1), ctypes.c_int64(ne2), ctypes.c_int64(ne3),
-                    ctypes.c_int(chunk_id))
-            
-            mmapped_file.close()
         
-        logging.info(f"Chunk {chunk_id} Executed. Hardware link closed.")
+        # FIX: Do not use 'with open' here, as it closes the file automatically.
+        f = open(self.model_path, "rb")
+        mmapped_file = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        
+        # Save references so they aren't garbage collected
+        self.active_files.append(f)
+        self.active_mmaps.append(mmapped_file)
+
+        c_obj = ctypes.py_object(mmapped_file)
+        address = ctypes.c_void_p()
+        length = ctypes.c_ssize_t()
+        ctypes.pythonapi.PyObject_AsReadBuffer(c_obj, ctypes.byref(address), ctypes.byref(length))
+        base_ptr = address.value
+
+        for tensor in target_chunk["tensors"]:
+            # Calculate the exact RAM address for this specific tensor
+            tensor_ptr = base_ptr + tensor["offset"]
+            tensor_name_bytes = tensor["name"].encode("utf-8")
+            ne0, ne1, ne2, ne3 = tensor["shape"]
+
+            self.cpp_engine.execute_tensor_chunk(
+                tensor_name_bytes, ctypes.c_int(tensor["type"]),
+                ctypes.c_void_p(tensor_ptr), ctypes.c_int64(ne0),
+                ctypes.c_int64(ne1), ctypes.c_int64(ne2), ctypes.c_int64(ne3),
+                ctypes.c_int(chunk_id))
+        
+        logging.info(f"Chunk {chunk_id} Executed. Hardware link stabilized.")
+
+    def shutdown_engine(self):
+        """Releases the C++ backend VRAM and closes memory maps safely."""
+        if hasattr(self, 'cpp_engine') and hasattr(self.cpp_engine, 'shutdown_compute_engine'):
+            logging.info("Shutting down C++ Compute Bridge and releasing hardware locks...")
+            self.cpp_engine.shutdown_compute_engine()
+            
+        logging.info("Closing OS memory maps...")
+        for m in self.active_mmaps:
+            m.close()
+        for f in self.active_files:
+            f.close()
+        self.active_mmaps.clear()
+        self.active_files.clear()
