@@ -46,56 +46,100 @@ The output interface
 
 ---
 
-## 🛠️ Usage 
+## 🛠️ Usage (Building from Source)
 
-FloatLLM relies on a custom C++ backend (Compute Bridge) to execute bare-metal matrix operations. Before running the router, you must compile the C++ compute bridge into a shared library natively on your machine using CMake.
+### 1. Envirnoment & Requirements
+Clone this repository and install the minimal required Python libraries:
+```bash
+git clone https://github.com/suryanshRoy/FloatLLM.git
+cd FloatLLM
+pip install -r requirements.txt
+```
 
-### 1. Build the Compute Bridge
+### 2. Fetch the GGML Library
+FloatLLM relies on the ```ggml``` C library for the matrix operations. You must clone it into the project root before compiling:
+```bash
+git clone https://github.com/ggerganov/ggml.git
+```
+
+### 3. Download a Test Model
+FloatLLM requires a model in the ```.gguf``` format. If you don't have one, you can download a **3B parameter test model (~2GB)**
+
+#### Using ```wget```:
+```bash
+wget -c -O test_model.gguf "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
+```
+#### Using ```curl```:
+```bash
+curl -L -o test_model.gguf "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
+```
+
+### Stress-test Model:
+Download the Stress-Test Model (14B Parameters, ~9GB)
+To demonstrate FloatLLM's core innovation—dynamic zero-copy memory chunking—you need a massive model that exceeds standard available RAM. Please run this command in your terminal to download a 14-Billion parameter test model (~9GB):
+#### Using ```wget```:
+```bash
+wget -c -O test_model.gguf \
+https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-GGUF/resolve/main/qwen2.5-14b-instruct-q4_k_m.gguf
+```
+#### Using ```curl```:
+```bash
+curl -L -o test_model.gguf \
+https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-GGUF/resolve/main/qwen2.5-14b-instruct-q4_k_m.gguf
+```
+
+### 4. Build the Compute Bridge
+
+> Make sure you have **CMake** installed, if you don't have then:
+* **Linux (Ubuntu/Debian):**
+```bash
+sudo apt update && sudo apt install cmake
+```
+* **macOS:**
+```bash
+brew install cmake
+```
+* **Windows:** ```https://cmake.org/download/```
+
+* If cmake has broken builds then before compiling C++
 
 **For Apple Silicon (Metal/MPS):**
 ```bash
-rm -rf build 
 cmake -B build -DGGML_DIR=../ggml
 cmake --build build --config Release -j 4
 ```
 **For NVIDIA GPU (CUDA):**
 ```bash
-rm -rf build
 cmake -B build -DGGML_CUDA=ON -DGGML_DIR=../ggml
 cmake --build build --config Release -j 4
 ```
 **For Vulkan GPU:**
 ```bash
-rm -rf build
 cmake -B build -DGGML_VULKAN=ON -DGGML_DIR=../ggml
 cmake --build build --config Release -j 4
 ```
 **For OpenCL:**
 ```bash
-rm -rf build
 cmake -B build -DGGML_OPENCL=ON -DGGML_DIR=../ggml
 cmake --build build --config Release -j 4
 ```
 **For SYCL (Intel OneAPI):**
 ```bash
-rm -rf build
 cmake -B build -DGGML_SYCL=ON -DGGML_DIR=../ggml
 cmake --build build --config Release -j 4
 ```
 **For Kompute / DirectX:**
 ```bash
-rm -rf build
 cmake -B build -DGGML_KOMPUTE=ON -DGGML_DIR=../ggml
 cmake --build build --config Release -j 4
 ```
 **For CPU-Only / Native ARM:**
 ```bash
-rm -rf build
 cmake -B build -DGGML_DIR=../ggml
 cmake --build build --config Release -j 4
 ``` 
 
-### 2. Run the Engine
+### 5. Run the Engine
 * Execute the router, pointing it to a local .gguf file:
 ```bash
 python floatllm_router.py --model-path /path/to/your/model.gguf --prompt "What is the capital of France?"
