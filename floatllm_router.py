@@ -8,7 +8,40 @@ import os
 import ctypes
 
 # CLI logging format
-logging.basicConfig(level=logging.INFO, format="[FloatLLM] %(message)s")
+class Colors:
+    BLUE = '\033[94m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    WHITE = '\033[97m'
+    RESET = '\033[0m'
+
+class ColorFormatter(logging.Formatter):
+    """Dynamically applies colors based on log level or injected extra parameters."""
+    def format(self, record):
+        # Default level-based colors
+        color = Colors.WHITE
+        if record.levelno >= logging.ERROR:
+            color = Colors.RED
+        elif record.levelno == logging.WARNING:
+            color = Colors.YELLOW
+
+        # Override if a custom color is passed via 'extra' dictionary
+        if hasattr(record, 'color'):
+            color = record.color
+
+        # Format the base message and wrap it in the resolved color
+        base_msg = record.getMessage()
+        return f"{color}[FloatLLM] {base_msg}{Colors.RESET}"
+
+# Configure the root logger with the dynamic formatter
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+if logger.hasHandlers():
+    logger.handlers.clear()
+ch = logging.StreamHandler(sys.stdout)
+ch.setFormatter(ColorFormatter())
+logger.addHandler(ch)
 
 def get_hardware_backend():
     """Dynamically route the workload based on host hardware."""
@@ -113,23 +146,24 @@ def check_failsafe_threshold(current_ram_mb, crash_threshold_mb, model_size_mb,
         else:
             allowed_ram_mb = safe_ram_mb
 
-        logging.info("\n--- Pre-Flight Memory Dashboard ---")
+        dash_color = {'color': Colors.BLUE}
+        logging.info("\n--- Pre-Flight Memory Dashboard ---", extra=dash_color)
         if total_ram_mb:
-            logging.info(f"Host Total Ram       : {total_ram_mb:.2f} MB")
-            logging.info(f"Host Used RAM        : {(total_ram_mb - current_ram_mb):.2f} MB")
-        logging.info(f"Host Free Ram        : {current_ram_mb:.2f} MB")
-        logging.info(f"Allowed RAM (Chunk)  : {allowed_ram_mb:.2f} MB (Buffer: {ram_buffer*100:.0f}%)")
+            logging.info(f"Host Total Ram       : {total_ram_mb:.2f} MB", extra=dash_color)
+            logging.info(f"Host Used RAM        : {(total_ram_mb - current_ram_mb):.2f} MB", extra=dash_color)
+        logging.info(f"Host Free Ram        : {current_ram_mb:.2f} MB", extra=dash_color)
+        logging.info(f"Allowed RAM (Chunk)  : {allowed_ram_mb:.2f} MB (Buffer: {ram_buffer*100:.0f}%)", extra=dash_color)
         if trusted_free_gb:
-            logging.info(f"Host Free Storage    : {trusted_free_gb:.2f} GB " + ("(OVERRIDEN)" if override_storage else ""))
-        logging.info(f"Target Model Size    : {model_size_mb:.2f} MB")
-        logging.info(f"Kill threshold       : {crash_threshold_mb:.2f} MB")
-        logging.info("--- User Execution Blueprint ---")
-        logging.info(f"Live Quantization    : {'ENABLED' if quantize_on_fly else 'DISABLED'}")
-        logging.info(f"AOT Quantization (Save): {'ACTIVE' if save_quantized else 'DISABLED'}")
-        logging.info(f"No-RAM Protocol (SSD): {'ACTIVE' if no_ram_protocol else 'DISABLED'}")
-        logging.info(f"Session ID           : [{session_id}]")
-        logging.info(f"Context Saving       : {'Temporary (Delete on Exit)' if temp_chat else 'PERSISTENT (Saved to SSD)'}")
-        logging.info("-"*80+"\n")
+            logging.info(f"Host Free Storage    : {trusted_free_gb:.2f} GB " + ("(OVERRIDEN)" if override_storage else ""), extra=dash_color)
+        logging.info(f"Target Model Size    : {model_size_mb:.2f} MB", extra=dash_color)
+        logging.info(f"Kill threshold       : {crash_threshold_mb:.2f} MB", extra=dash_color)
+        logging.info("--- User Execution Blueprint ---", extra=dash_color)
+        logging.info(f"Live Quantization    : {'ENABLED' if quantize_on_fly else 'DISABLED'}", extra=dash_color)
+        logging.info(f"AOT Quantization (Save): {'ACTIVE' if save_quantized else 'DISABLED'}", extra=dash_color)
+        logging.info(f"No-RAM Protocol (SSD): {'ACTIVE' if no_ram_protocol else 'DISABLED'}", extra=dash_color)
+        logging.info(f"Session ID           : [{session_id}]", extra=dash_color)
+        logging.info(f"Context Saving       : {'Temporary (Delete on Exit)' if temp_chat else 'PERSISTENT (Saved to SSD)'}", extra=dash_color)
+        logging.info("\n")
 
         return allowed_ram_mb
 
@@ -221,7 +255,7 @@ if __name__ == "__main__":
         word = tokenizer.decode([next_token_id])
 
         # Stream to the terminal without a newline
-        sys.stdout.write(word + " ")
+        sys.stdout.write(f"{Colors.GREEN}{word}{Colors.RESET} ")
         sys.stdout.flush()
 
         token_ids.append(next_token_id)
