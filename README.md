@@ -39,8 +39,9 @@ The translation layer.
 * **100% Offline Generation:** Dynamically reads the internal `tokenizer.ggml.tokens` array directly from the GGUF file. Zero API calls, zero internet dependency.
 * **Dynamic Handling:** Automatically scales between 1B and 405B parameter models, supporting all standard tokenization architectures.
 
-### Phase 5 (Generation loop & Transforemer Brain) - In Development
+### Phase 5 (Generation loop) - Active (Raw logit streaming test) 
 The output interface
+**Note:** Currently bypasses hidden layers to stress-test the zero-copy *VRAM* buffer allocation and streaming loop stability.
 * **Generation loop:** Pipeline integrated. Prompt integers are passed securely across the `ctypes` bridge, processed through the GPU, and streamed back horizontally to the user terminal in real-time.
 
 ---
