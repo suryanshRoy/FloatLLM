@@ -5,6 +5,7 @@ import logging
 import psutil
 import shutil
 import os
+import ctypes
 
 # CLI logging format
 logging.basicConfig(level=logging.INFO, format="[FloatLLM] %(message)s")
@@ -147,6 +148,7 @@ if __name__ == "__main__":
     parser.add_argument("--save-quantized", action="store_true", help="Save the compressed model to SSD so original can be deleted.")
     parser.add_argument("--ram-limit", type=float, default=None, help="Hard adjustment on RAM usage in GB")
     parser.add_argument("--ram-buffer", type=float, default=0.20, help="Percentage of RAM to reserve for KV cache/OS (default 0.20)")
+    parser.add_argument("--prompt", type=str, required=True, help="The prompt you want to send to the LLM")
 
     args = parser.parse_args()
 
@@ -179,21 +181,54 @@ if __name__ == "__main__":
                             ram_limit=args.ram_limit,
                             ram_buffer=args.ram_buffer)
     
-    logging.info("Blueprint validated. Proceeding to Model Loader...\n")
+    from floatllm_tokenizer import FloatLLM_Tokenizer
+    tokenizer = FloatLLM_Tokenizer(args.model_path)
+
+    token_ids = tokenizer.encode(args.prompt)
 
     from floatllm_loader import FloatLLM_Loader
-
     loader = FloatLLM_Loader(model_path= args.model_path, allowed_ram_mb=calculated_limit, backend_name = backend)
+
     tensor_map = loader.parse_gguf_metadata()
     loader.wake_engine(len(tensor_map))
     loader.build_dynamic_chunks(tensor_map)
 
-    logging.info("-"*80)
+    # logging.info("-"*80)
     for chunk in loader.chunks:
         loader.stream_chunk(chunk["id"])
+
+    logging.info("Engine successfully mapped. Handing to AI...\n")
     logging.info("-"*80)
-    logging.info("Engine successfully mapped.")
+
+    # --- THE GENERATION LOOP ---
+    logging.info(f"\nUser: {args.prompt}")
+    sys.stdout.write("[FloatLLM] ")
+    sys.stdout.flush()
+
+    max_tokens_to_generate = 20 # Let's generate 20 words for this test
+
+    for step in range(max_tokens_to_generate):
+        # Convert our growing list of token IDs into a raw C-array
+        c_token_array = (ctypes.c_int32 * len(token_ids))(*token_ids)
+        c_num_tokens = ctypes.c_int(len(token_ids))
+
+        next_token_id = loader.cpp_engine.execute_forward_pass(c_token_array, c_num_tokens)
+
+        # Stop if the AI decides the sentence is finished!
+        if next_token_id == tokenizer.eos_token_id:
+            break
+
+        word = tokenizer.decode([next_token_id])
+
+        # Stream to the terminal without a newline
+        sys.stdout.write(word + " ")
+        sys.stdout.flush()
+
+        token_ids.append(next_token_id)
+
+    sys.stdout.write("\n\n")
+    sys.stdout.flush()
+
+    logging.info("-" * 80)
     
-    # Execute Math test once, then shut down gracefully
-    loader.cpp_engine.execute_graph_test()
     loader.shutdown_engine()

@@ -120,64 +120,77 @@ extern "C" {
                   << "| Target hardware: " << ggml_backend_name(backend) << std::endl;
         }
 
-    // 3. Math execution pipeline
-    void execute_graph_test() {
-        std::cout << "[FloatLLM(C++)] Assembling computation graph..." << std::endl;
-
-        if (tensor_registry.empty()) {
-            std::cout << "[FloatLLM(C++)] Not enough tensors mapped." << std::endl;
-            return;
-        }
-
-        // Dynamically locate a 2D tensor for GPU matrix math
-        struct ggml_tensor* model_weight = nullptr;
-        for (auto const& pair : tensor_registry){
-            if (pair.second->ne[1] > 1){
-                model_weight = pair.second;
-                break;
-            }
-        } 
-
-        if (model_weight == nullptr){
-            std::cout << "[FloatLLM(C++)] No suitable 2D tensor found for matrix math." << std::endl;
-            return;
-        }
-
-        // tiny localized context for graph's instructions (1MB)
-        struct ggml_init_params params = {
-            /* .mem_size   = */ 1024 * 1024,
-            /* .mem_buffer = */ NULL,
-            /* .no_alloc.  = */ true,
-        };
-
+    // Return 32-bit integer (the next token)
+    int32_t execute_forward_pass(int32_t* tokens, int num_tokens) {
+        
+        struct ggml_init_params params = {1024 * 1024 * 16, NULL, true};
         struct ggml_context * graph_ctx = ggml_init(params);
         struct ggml_cgraph * gf = ggml_new_graph(graph_ctx);
 
-        // --- Math Pipeline ---
-        struct ggml_tensor* dummy_f32_input = ggml_new_tensor_2d(graph_ctx, GGML_TYPE_F32, model_weight->ne[0], 1);
-        ggml_set_name(dummy_f32_input, "dummy_user_input");
+        struct ggml_tensor* prompt_tensor = ggml_new_tensor_1d(graph_ctx, GGML_TYPE_I32, num_tokens);
+        ggml_set_name(prompt_tensor, "prompt_input");
 
-        struct ggml_tensor* math_result = ggml_mul_mat(graph_ctx, model_weight, dummy_f32_input);
-        ggml_build_forward_expand(gf, math_result);
+        struct ggml_tensor* token_embd = tensor_registry["token_embd.weight"];
+        struct ggml_tensor* output_weight = tensor_registry["output.weight"];
 
-        // Detach CPU RAM pointer for safe Hardware VRAM execution
-        void* ram_ram_pointer = model_weight->data;
-        model_weight->data = nullptr;
+        if (!token_embd || !output_weight){
+            std::cerr << "[FloatLLM(C++)] ERROR: Core tensors (token_embd or output) not found in model." << std::endl;
+            ggml_free(graph_ctx);
+            return 128009; 
+        }
 
-        // Tell the Allocator to reserve VRAM on the GPU/CPU for the math operations
-        ggml_gallocr_alloc_graph(allocr, gf);
+        // --- MATH PIPELINE ---
+        struct ggml_tensor* current_embeddings = ggml_get_rows(graph_ctx, token_embd, prompt_tensor);
+        
+        
+        struct ggml_tensor* logits = ggml_mul_mat(graph_ctx, output_weight, current_embeddings);
+        ggml_build_forward_expand(gf, logits);
 
-        // Upload the Zero-Copy Python data into the hardware buffer
-        ggml_backend_tensor_set(model_weight, ram_ram_pointer, 0, ggml_nbytes(model_weight));
-        std::vector<float> dummy_data(model_weight->ne[0], 1.0f);
-        ggml_backend_tensor_set(dummy_f32_input, dummy_data.data(), 0, dummy_data.size() * sizeof(float));
+        // Save the Python RAM pointers locally 
+        void* raw_embd_ptr = token_embd->data;
+        void* raw_out_ptr = output_weight->data;
 
-        // Execute math across any supported hardware (CUDA, Vulkan, Metal, CPU) :---)
+        // detach pointers so the GPU allocates true VRAM for them
+        token_embd->data = nullptr;
+        output_weight->data = nullptr;
+
+        // Clear the buffers from the previous loop iteration
+        token_embd->buffer = nullptr;
+        output_weight->buffer = nullptr;
+
+        ggml_gallocr_alloc_graph(allocr, gf); 
+        
+        // Securely upload the zero-copy Python data into the Hardware VRAM buffer
+        ggml_backend_tensor_set(token_embd, raw_embd_ptr, 0, ggml_nbytes(token_embd));
+        ggml_backend_tensor_set(output_weight, raw_out_ptr, 0, ggml_nbytes(output_weight));
+        ggml_backend_tensor_set(prompt_tensor, tokens, 0, num_tokens * sizeof(int32_t));
+
+        // Fire the GPU!
         ggml_backend_graph_compute(backend, gf);
 
-        std::cout << "[Float(C++)] Matrix math complete. Output generated successfully." << std::endl;
+        // Read the final results back to RAM to pick the winner
+        int vocab_size = logits->ne[0];
+        std::vector<float> logits_data(vocab_size);
+        
+        // Logits for the very LAST token in the sequence 
+        ggml_backend_tensor_get(logits, logits_data.data(), (num_tokens - 1) * vocab_size * sizeof(float), vocab_size * sizeof(float));
+
+        // Find the index of the highest probability 
+        int32_t best_token = 0;
+        float max_val = -1e9;
+        for (int i = 0; i < vocab_size; i++) {
+            if (logits_data[i] > max_val) {
+                max_val = logits_data[i];
+                best_token = i;
+            }
+        }
+
+        // --- RESTORE THE PYTHON RAM POINTERS FOR THE NEXT GENERATION LOOP ---
+        token_embd->data = raw_embd_ptr;
+        output_weight->data = raw_out_ptr;
 
         ggml_free(graph_ctx);
+        return best_token;
     }
 
     // 4. Shutdown to prevent Memory Leaks
