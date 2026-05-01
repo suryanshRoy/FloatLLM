@@ -19,15 +19,11 @@ class FloatLLM_Loader:
         
         self.file_size = os.path.getsize(self.model_path)
         self.chunks = []
-        
-        # --- FIX: Prevent Garbage Collection of Memory Maps ---
-        # We must keep the file objects and mmaps alive here. If they close, 
-        # the OS reclaims the RAM, and the C++ engine gets a dangling pointer.
         self.active_files = [] 
         self.active_mmaps = []
 
         # --- C++ COMPUTE BRIDGE WAKE-UP ---
-        # 1. Locate and load the compiled file based on user's OS 
+        # 1. Locate and load the compiled file based on OS 
         system_os = platform.system().lower()
         if system_os == "windows":
             ext = ".dll"
@@ -44,9 +40,9 @@ class FloatLLM_Loader:
 
         self.cpp_engine = ctypes.CDLL(lib_path)
 
-        # 2. Exact C++ argument so Python doesn't crash the memory
+        # 2. C++ argument so Python doesn't crash the memory
         self.cpp_engine.init_compute_engine.argtypes = [ctypes.c_char_p, ctypes.c_int]
-        # Send name, true type, pointer, and all 4 dimensions
+
         self.cpp_engine.execute_tensor_chunk.argtypes = [
             ctypes.c_char_p, ctypes.c_int,
             ctypes.c_void_p, ctypes.c_int64,
@@ -54,7 +50,8 @@ class FloatLLM_Loader:
             ctypes.c_int64,  ctypes.c_int]
 
         # Graph execution signal 
-        self.cpp_engine.execute_graph_test.argtypes = []
+        self.cpp_engine.execute_forward_pass.argtypes = [ctypes.POINTER(ctypes.c_int32), ctypes.c_int]
+        self.cpp_engine.execute_forward_pass.restype = ctypes.c_int32
 
     def wake_engine(self, total_tensors):
         """Fires the wake-up signal safely after metadata is parsed"""
@@ -77,7 +74,7 @@ class FloatLLM_Loader:
 
             tensors.append({
                 "name": tensor.name,
-                "type":  int(tensor.tensor_type), #Quantization type (e.g. F16, F32, Q4)
+                "type":  int(tensor.tensor_type), # Quantization type (e.g. F16, F32, Q4)
                 "offset": tensor.data_offset, 
                 "size": tensor.n_bytes,
                 "shape":  shape
@@ -124,9 +121,8 @@ class FloatLLM_Loader:
         if not target_chunk:
             return None
         
-        logging.info(f"Streaming Chunk {chunk_id}/{len(self.chunks)} -> RAM [{target_chunk['total_size_mb']:.2f} MB...]")
+        # logging.info(f"Streaming Chunk {chunk_id}/{len(self.chunks)} -> RAM [{target_chunk['total_size_mb']:.2f} MB...]")
         
-        # FIX: Do not use 'with open' here, as it closes the file automatically.
         f = open(self.model_path, "rb")
         mmapped_file = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
         
@@ -152,7 +148,7 @@ class FloatLLM_Loader:
                 ctypes.c_int64(ne1), ctypes.c_int64(ne2), ctypes.c_int64(ne3),
                 ctypes.c_int(chunk_id))
         
-        logging.info(f"Chunk {chunk_id} Executed. Hardware link stabilized.")
+        # logging.info(f"Chunk {chunk_id} Executed. Hardware link stabilized.")
 
     def shutdown_engine(self):
         """Releases the C++ backend VRAM and closes memory maps safely."""
