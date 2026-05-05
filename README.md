@@ -1,5 +1,9 @@
 # FloatLLM 🚀
 
+<div align="center">
+  <img src="assets/logo.png" alt="FloatLLM Logo" width="100%">
+</div>
+
 **A bare-metal, hardware-agnostic Large Language Model (LLM) inference engine designed to run massive models on heavily memory-constrained edge devices, and to act as a safety feature for running LLMs locally.**
 
 FloatLLM is built for a fundamental shift in local AI execution: **Dynamic Zero-Copy Memory Chunking**. 
@@ -40,8 +44,8 @@ The translation layer.
 * **Dynamic Handling:** Automatically scales between 1B and 405B parameter models, supporting all standard tokenization architectures.
 
 ### Phase 5 (Generation loop) - Active (Raw logit streaming test) 
-The output interface
-**Note:** Currently bypasses hidden layers to stress-test the zero-copy *VRAM* buffer allocation and streaming loop stability.
+The output interface.
+* **Note:** Currently bypasses hidden layers to stress-test the zero-copy *VRAM* buffer allocation and streaming loop stability.
 * **Generation loop:** Pipeline integrated. Prompt integers are passed securely across the `ctypes` bridge, processed through the GPU, and streamed back horizontally to the user terminal in real-time.
 
 ---
@@ -63,15 +67,15 @@ git clone https://github.com/ggerganov/ggml.git
 ```
 
 ### 3. Download a Test Model
-FloatLLM requires a model in the ```.gguf``` format. If you don't have one, you can download a **3B parameter test model (~2GB)**
+FloatLLM requires a model in the ```.gguf``` format. If you don't have one, you can download a **7B parameter test model (~3.5GB)**
 
 #### Using ```wget```:
 ```bash
-wget -c -O test_model.gguf "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
+wget -c -O test_model.gguf "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q3_K_M.gguf"
 ```
 #### Using ```curl```:
 ```bash
-curl -L -o test_model.gguf "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
+curl -L -o test_model.gguf "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q3_K_M.gguf"
 ```
 
 ### Stress-test Model:
@@ -79,13 +83,11 @@ Download the Stress-Test Model (14B Parameters, ~9GB)
 To demonstrate FloatLLM's core innovation—dynamic zero-copy memory chunking—you need a massive model that exceeds standard available RAM. Please run this command in your terminal to download a 14-Billion parameter test model (~9GB):
 #### Using ```wget```:
 ```bash
-wget -c -O test_model.gguf \
-https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-GGUF/resolve/main/qwen2.5-14b-instruct-q4_k_m.gguf
+wget -c -O test_model.gguf "https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf"
 ```
 #### Using ```curl```:
 ```bash
-curl -L -o test_model.gguf \
-https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-GGUF/resolve/main/qwen2.5-14b-instruct-q4_k_m.gguf
+curl -L -o test_model.gguf "https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf"
 ```
 
 ### 4. Build the Compute Bridge
@@ -101,46 +103,46 @@ brew install cmake
 ```
 * **Windows:** ```https://cmake.org/download/```
 
-* If cmake has broken builds then before compiling C++
+* If cmake has broken builds then before compiling C++ make sure to ```rm -rf build```
 
 **For Apple Silicon (Metal/MPS):**
 ```bash
-cmake -B build -DGGML_DIR=../ggml
+cmake -B build -DGGML_DIR=/path/to/ggml
 cmake --build build --config Release -j 4
 ```
 **For NVIDIA GPU (CUDA):**
 ```bash
-cmake -B build -DGGML_CUDA=ON -DGGML_DIR=../ggml
+cmake -B build -DGGML_CUDA=ON -DGGML_DIR=/path/to/ggml
 cmake --build build --config Release -j 4
 ```
 **For Vulkan GPU:**
 ```bash
-cmake -B build -DGGML_VULKAN=ON -DGGML_DIR=../ggml
+cmake -B build -DGGML_VULKAN=ON -DGGML_DIR=/path/to/ggml
 cmake --build build --config Release -j 4
 ```
 **For OpenCL:**
 ```bash
-cmake -B build -DGGML_OPENCL=ON -DGGML_DIR=../ggml
+cmake -B build -DGGML_OPENCL=ON -DGGML_DIR=/path/to/ggml
 cmake --build build --config Release -j 4
 ```
 **For SYCL (Intel OneAPI):**
 ```bash
-cmake -B build -DGGML_SYCL=ON -DGGML_DIR=../ggml
+cmake -B build -DGGML_SYCL=ON -DGGML_DIR=/path/to/ggml
 cmake --build build --config Release -j 4
 ```
 **For Kompute / DirectX:**
 ```bash
-cmake -B build -DGGML_KOMPUTE=ON -DGGML_DIR=../ggml
+cmake -B build -DGGML_KOMPUTE=ON -DGGML_DIR=/path/to/ggml
 cmake --build build --config Release -j 4
 ```
 **For CPU-Only / Native ARM:**
 ```bash
-cmake -B build -DGGML_DIR=../ggml
+cmake -B build -DGGML_DIR=/path/to/ggml
 cmake --build build --config Release -j 4
 ``` 
 
 ### 5. Run the Engine
 * Execute the router, pointing it to a local .gguf file:
 ```bash
-python floatllm_router.py --model-path /path/to/your/model.gguf --prompt "What is the capital of France?"
+python floatllm_router.py --hardware auto --model-path /path/to/your/model.gguf --prompt "What is the capital of France?"
 ```
