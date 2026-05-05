@@ -68,6 +68,11 @@ class FloatLLM_Tokenizer:
                 else:
                     continue
 
+                # Prevent duplicates and metadata from inflating the ID count
+                if token_str not in self.token_to_id:
+                    self.vocab.append(token_str)
+                    self.token_to_id[token_str] = len(self.vocab) - 1
+
                 self.vocab.append(token_str)
                 self.token_to_id[token_str] = len(self.vocab) - 1
 
