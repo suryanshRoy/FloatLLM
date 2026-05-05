@@ -239,7 +239,7 @@ if __name__ == "__main__":
     sys.stdout.write("[FloatLLM] ")
     sys.stdout.flush()
 
-    max_tokens_to_generate = 20 # Let's generate 20 words for this test
+    max_tokens_to_generate = 60 # Let's generate 60 words for this test
 
     for step in range(max_tokens_to_generate):
         # Convert our growing list of token IDs into a raw C-array
@@ -262,7 +262,7 @@ if __name__ == "__main__":
 
     sys.stdout.write("\n\n")
     sys.stdout.flush()
-
+    logging.info("Generated first 60 tokens in output!")
     logging.info("-" * 80)
     
     loader.shutdown_engine()

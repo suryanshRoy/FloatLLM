@@ -130,13 +130,48 @@ extern "C" {
         struct ggml_tensor* prompt_tensor = ggml_new_tensor_1d(graph_ctx, GGML_TYPE_I32, num_tokens);
         ggml_set_name(prompt_tensor, "prompt_input");
 
-        struct ggml_tensor* token_embd = tensor_registry["token_embd.weight"];
-        struct ggml_tensor* output_weight = tensor_registry["output.weight"];
+        // --- NEW: DYNAMIC TENSOR RESOLUTION ---
+        struct ggml_tensor* token_embd = nullptr;
+        struct ggml_tensor* output_weight = nullptr;
+
+        // 1. Prioritize exact standard matches first for predictable behavior
+        if (tensor_registry.count("token_embd.weight")) token_embd = tensor_registry["token_embd.weight"];
+        else if (tensor_registry.count("model.embed_tokens.weight")) token_embd = tensor_registry["model.embed_tokens.weight"];
+
+        if (tensor_registry.count("output.weight")) output_weight = tensor_registry["output.weight"];
+        else if (tensor_registry.count("lm_head.weight")) output_weight = tensor_registry["lm_head.weight"];
+
+        // 2. Safe fallback scan (explicitly ignoring internal transformer blocks)
+        if (!token_embd || !output_weight) {
+            for (auto const& [key, val] : tensor_registry) {
+                // Skip attention and feed-forward intermediate layers entirely
+                if (key.find("blk.") != std::string::npos || key.find("layer") != std::string::npos) continue;
+
+                if (!token_embd && key.find("embed") != std::string::npos) {
+                    token_embd = val;
+                }
+                if (!output_weight && (key.find("output") != std::string::npos || key.find("head") != std::string::npos) && key.find("norm") == std::string::npos) {
+                    output_weight = val;
+                }
+            }
+        }
+
+        // 3. Fallback for "Tied Embeddings" (Smaller models reuse embedding weights for the output)
+        if (!output_weight && token_embd) {
+            output_weight = token_embd;
+        }
 
         if (!token_embd || !output_weight){
             std::cerr << "[FloatLLM(C++)] ERROR: Core tensors (token_embd or output) not found in model." << std::endl;
             ggml_free(graph_ctx);
-            return 128009; 
+            return -1; 
+        }
+        
+        int64_t max_vocab_size = token_embd->ne[1]; 
+        for (int i = 0; i < num_tokens; i++) {
+            if (tokens[i] < 0 || tokens[i] >= max_vocab_size) {
+                tokens[i] = 0; // Clamp to safe default to keep the engine alive
+            }
         }
 
         // --- MATH PIPELINE ---
@@ -178,7 +213,14 @@ extern "C" {
         // Find the index of the highest probability 
         int32_t best_token = 0;
         float max_val = -1e9;
+        
+        // Extract the last token we just fed into the network
+        int32_t last_input_token = tokens[num_tokens - 1]; 
+
         for (int i = 0; i < vocab_size; i++) {
+            // Prevent tied-embedding models from continuously echoing the exact same token
+            if (i == last_input_token) continue; 
+
             if (logits_data[i] > max_val) {
                 max_val = logits_data[i];
                 best_token = i;

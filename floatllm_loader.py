@@ -19,11 +19,19 @@ class FloatLLM_Loader:
         
         self.file_size = os.path.getsize(self.model_path)
         self.chunks = []
-        self.active_files = [] 
-        self.active_mmaps = []
 
-        # --- C++ COMPUTE BRIDGE WAKE-UP ---
-        # 1. Locate and load the compiled file based on OS 
+        # --- 1. SINGLE GLOBAL MEMORY MAP ---
+        # Map the file exactly once to prevent OS Errno 24 (Too many open files)
+        self.file_obj = open(self.model_path, "rb")
+        self.mmapped_file = mmap.mmap(self.file_obj.fileno(), 0, access=mmap.ACCESS_READ)
+        
+        c_obj = ctypes.py_object(self.mmapped_file)
+        address = ctypes.c_void_p()
+        length = ctypes.c_ssize_t()
+        ctypes.pythonapi.PyObject_AsReadBuffer(c_obj, ctypes.byref(address), ctypes.byref(length))
+        self.mmap_base_ptr = address.value
+
+        # --- 2. Locate and load the compiled file based on OS --- 
         system_os = platform.system().lower()
         if system_os == "windows":
             ext = ".dll"
@@ -31,17 +39,37 @@ class FloatLLM_Loader:
             ext = ".dylib"
         else:
             ext = ".so"
+            
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        lib_name = f"floatllm_compute{ext}"
+        potential_names = [lib_name, f"lib{lib_name}"]
         
-        lib_path = os.path.abspath(f"floatllm_compute{ext}")
+        lib_path = None
+        
+        # Search root first, then build folder
+        for name in potential_names:
+            paths_to_check = [
+                os.path.join(base_dir, name),
+                os.path.join(base_dir, "build", name)
+            ]
+            for p in paths_to_check:
+                if os.path.exists(p):
+                    lib_path = p
+                    break
+            if lib_path:
+                break
 
-        if not os.path.exists(lib_path):
-            logging.error(f"Compiled C++ backend not found!\nPlease run the compilation command for your OS.")
+        if not lib_path:
+            logging.error(f"Compiled C++ backend engine NOT FOUND.")
+            logging.error(f"Checked root and /build/ for: {potential_names}")
+            logging.error("Please ensure you've run: cmake --build build --config Release")
             raise FileNotFoundError
 
         self.cpp_engine = ctypes.CDLL(lib_path)
 
-        # 2. C++ argument so Python doesn't crash the memory
+        # --- 3. C++ Types ---
         self.cpp_engine.init_compute_engine.argtypes = [ctypes.c_char_p, ctypes.c_int]
+        self.cpp_engine.init_compute_engine.restype = None
 
         self.cpp_engine.execute_tensor_chunk.argtypes = [
             ctypes.c_char_p, ctypes.c_int,
@@ -116,29 +144,14 @@ class FloatLLM_Loader:
         logging.info(f"Model succesfuly sliced into {len(self.chunks)} dynamic blocks")
 
     def stream_chunk(self, chunk_id):
-        """Creates a zero-copy mmap bridge to the SSD for a specific block of weights."""
+        """Streams a specific block of weights to C++ using the pre-mapped global pointer."""
         target_chunk = next((c for c in self.chunks if c["id"] == chunk_id), None)
         if not target_chunk:
             return None
         
-        # logging.info(f"Streaming Chunk {chunk_id}/{len(self.chunks)} -> RAM [{target_chunk['total_size_mb']:.2f} MB...]")
-        
-        f = open(self.model_path, "rb")
-        mmapped_file = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-        
-        # Save references so they aren't garbage collected
-        self.active_files.append(f)
-        self.active_mmaps.append(mmapped_file)
-
-        c_obj = ctypes.py_object(mmapped_file)
-        address = ctypes.c_void_p()
-        length = ctypes.c_ssize_t()
-        ctypes.pythonapi.PyObject_AsReadBuffer(c_obj, ctypes.byref(address), ctypes.byref(length))
-        base_ptr = address.value
-
         for tensor in target_chunk["tensors"]:
-            # Calculate the exact RAM address for this specific tensor
-            tensor_ptr = base_ptr + tensor["offset"]
+            # Calculate the exact RAM address for this specific tensor using the base pointer
+            tensor_ptr = self.mmap_base_ptr + tensor["offset"]
             tensor_name_bytes = tensor["name"].encode("utf-8")
             ne0, ne1, ne2, ne3 = tensor["shape"]
 
@@ -147,8 +160,6 @@ class FloatLLM_Loader:
                 ctypes.c_void_p(tensor_ptr), ctypes.c_int64(ne0),
                 ctypes.c_int64(ne1), ctypes.c_int64(ne2), ctypes.c_int64(ne3),
                 ctypes.c_int(chunk_id))
-        
-        # logging.info(f"Chunk {chunk_id} Executed. Hardware link stabilized.")
 
     def shutdown_engine(self):
         """Releases the C++ backend VRAM and closes memory maps safely."""
@@ -157,9 +168,7 @@ class FloatLLM_Loader:
             self.cpp_engine.shutdown_compute_engine()
             
         logging.info("Closing OS memory maps...")
-        for m in self.active_mmaps:
-            m.close()
-        for f in self.active_files:
-            f.close()
-        self.active_mmaps.clear()
-        self.active_files.clear()
+        if hasattr(self, 'mmapped_file'):
+            self.mmapped_file.close()
+        if hasattr(self, 'file_obj'):
+            self.file_obj.close()
