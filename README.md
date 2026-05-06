@@ -146,3 +146,8 @@ cmake --build build --config Release -j 4
 ```bash
 python floatllm_router.py --hardware auto --model-path /path/to/your/model.gguf --prompt "What is the capital of France?"
 ```
+
+## 🤖 AI Acknowledgement
+FloatLLM was fundamentally driven by human architectural design, but AI tools were actively leveraged as collaborative research and debugging assistants. I acted as the core systems architect, directing the routing logic, memory management, and broad structural shifts. 
+
+During development, **Google Search AI Overviews** were utilized for researching core concepts and discovering cross-platform C++ libraries. **Gemini** was heavily utilized as a debugging partner to help troubleshoot the project's most difficult technical hurdles. Specifically, Gemini assisted in debugging the bare-metal C++ inference engine crashes, optimizing tensor management within the Python loader, and resolving complex OS-specific `ggml` bugs. All final implementations and architectural decisions were independently executed and tested.
