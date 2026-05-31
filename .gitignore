@@ -26,6 +26,7 @@ CMakeFiles/
 *.ggml
 *.safetensors
 *.bin
+ggml/
 
 # Logs and Environments
 *.log

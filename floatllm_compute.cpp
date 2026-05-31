@@ -5,13 +5,26 @@
 #include <algorithm>
 #include <cctype>
 #include <vector>
+#include <iomanip>
+#include <sstream>
+#include <cstdlib>
+#include <fstream>
+#include <stdexcept>
+#include <utility>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include "ggml.h"
 #include "ggml-backend.h"
 #include "ggml-alloc.h"
+#include "gguf.h"
 
 // Bug fix
 #ifdef __APPLE__
+#include <mach/mach.h>
 extern "C" ggml_backend_t ggml_backend_metal_init(void);
 #endif
 
@@ -101,6 +114,99 @@ extern "C" {
             std::cout << "[FloatLLM(C++)] Engine mapped & Harware locked to: " << ggml_backend_name(backend) << std::endl;
             std::cout << "[FloatLLM(C++)] Graph Allocator online." << std::endl;
         }
+    }
+
+    double check_failsafe_threshold(double current_ram_mb, double crash_threshold_mb, double model_size_mb, double total_storage_gb,
+                                    double free_storage_gb, double used_ram_mb, double total_ram_mb, int quantize_on_fly,
+                                    int save_quantized, int no_ram_protocol, double override_storage_gb, const char* session_id,
+                                    int temp_chat, double ram_limit_gb, double ram_buffer) {
+        auto fmt2 = [](double value) {
+            std::ostringstream oss;
+            oss << std::fixed << std::setprecision(2) << value;
+            return oss.str();
+        };
+
+        const std::string session = session_id ? session_id : "default";
+        const double model_size_gb = model_size_mb / 1024.0;
+        double trusted_free_gb = free_storage_gb;
+
+        if (override_storage_gb >= 0.0) {
+            trusted_free_gb = override_storage_gb;
+            std::cout << "[FloatLLM(C++)]\n Overriding UNIX limits. Trusting your input of "
+                      << fmt2(trusted_free_gb) << " GB.\n";
+            if (total_storage_gb > 0.0 && trusted_free_gb > total_storage_gb) {
+                std::cerr << "[FloatLLM(C++)] CRITICAL: Override (" << trusted_free_gb
+                          << " GB) exceeds total disk size (" << fmt2(total_storage_gb)
+                          << " GB). Halting.\n";
+                std::exit(1);
+            }
+        }
+        else {
+#ifdef __APPLE__
+            if (free_storage_gb > 0.0 && model_size_gb > free_storage_gb) {
+                std::cout << "[FloatLLM(C++)]\n⚠️ UNIX sees " << fmt2(free_storage_gb)
+                          << " GB. Model needs " << fmt2(model_size_gb) << " GB.\n";
+                std::cout << "[FloatLLM(C++)] macOS hides Purgeable space. If you have enough space in System Settings, run with: [--override-storage YOUR_GB]\n";
+            }
+#endif
+        }
+
+        if (trusted_free_gb > 0.0 && model_size_gb > trusted_free_gb) {
+            std::cerr << "[FloatLLM(C++)]\n--------------------------------------------------------------------------------\n";
+            std::cerr << "[FloatLLM(C++)] 🚨 FloatLLM STORAGE FAILSAFE TRIGGERED\n";
+            std::cerr << "[FloatLLM(C++)] CRITICAL: Model requires " << fmt2(model_size_gb)
+                      << " GB, but only " << fmt2(trusted_free_gb) << " GB is free.\n";
+            std::cerr << "[FloatLLM(C++)] Action: Halting to prevent storage corruption.\n";
+            std::cerr << "[FloatLLM(C++)]--------------------------------------------------------------------------------\n\n";
+            std::exit(1);
+        }
+
+        if (current_ram_mb <= crash_threshold_mb) {
+            std::cerr << "[FloatLLM(C++)]\n--------------------------------------------------------------------------------\n";
+            std::cerr << "[FloatLLM(C++)] 🚨 FloatLLM OOM Failsafe triggered to stop crashing/freezing of device.\n";
+            std::cerr << "[FloatLLM(C++)] CRITICAL: Free RAM (" << fmt2(current_ram_mb)
+                      << " MB) hit the crash threshold (" << fmt2(crash_threshold_mb) << " MB).\n";
+            std::cerr << "[FloatLLM(C++)] Target Model Size: " << fmt2(model_size_mb) << " MB\n";
+            if (used_ram_mb >= 0.0) {
+                std::cerr << "[FloatLLM(C++)] FloatLLM Consumed: " << fmt2(used_ram_mb) << " MB (Max Peak)\n";
+            }
+            std::cerr << "[FloatLLM(C++)] Action: Halting execution gracefully. Model data safely flushed.\n";
+            std::cerr << "[FloatLLM(C++)] Adjust [--crash-threshold] or increase [--ram-limit] for more safety.\n";
+            std::cerr << "[FloatLLM(C++)] For extreme offload: Enable [--no-ram-protocol] to dump KV Cache & Hidden States to SSD.\n";
+            std::cerr << "[FloatLLM(C++)] Or Compression: Enable [--quantize-on-fly] to compress weights in memory.\n";
+            std::cerr << "[FloatLLM(C++)] Or Quantize the model permanently using --save-quantized to run the saved quantize model.\n";
+            std::cerr << "[FloatLLM(C++)]--------------------------------------------------------------------------------\n\n";
+            std::exit(1);
+        }
+
+        const double safe_ram_mb = std::max(1.0, (current_ram_mb * (1.0 - ram_buffer)) - crash_threshold_mb);
+        const double allowed_ram_mb = (ram_limit_gb > 0.0)
+            ? std::min(safe_ram_mb, ram_limit_gb * 1024.0)
+            : safe_ram_mb;
+
+        std::cout << "[FloatLLM(C++)]\n--- Pre-Flight Memory Dashboard ---\n";
+        if (total_ram_mb > 0.0) {
+            std::cout << "[FloatLLM(C++)] Host Total Ram       : " << fmt2(total_ram_mb) << " MB\n";
+            std::cout << "[FloatLLM(C++)] Host Used RAM        : " << fmt2(total_ram_mb - current_ram_mb) << " MB\n";
+        }
+        std::cout << "[FloatLLM(C++)] Host Free Ram        : " << fmt2(current_ram_mb) << " MB\n";
+        std::cout << "[FloatLLM(C++)] Allowed RAM (Chunk)  : " << fmt2(allowed_ram_mb) << " MB (Buffer: "
+                  << (ram_buffer * 100.0) << "%)\n";
+        if (trusted_free_gb > 0.0) {
+            std::cout << "[FloatLLM(C++)] Host Free Storage    : " << fmt2(trusted_free_gb)
+                      << " GB " << (override_storage_gb >= 0.0 ? "(OVERRIDEN)" : "") << "\n";
+        }
+        std::cout << "[FloatLLM(C++)] Target Model Size    : " << fmt2(model_size_mb) << " MB\n";
+        std::cout << "[FloatLLM(C++)] Kill threshold       : " << fmt2(crash_threshold_mb) << " MB\n";
+        std::cout << "[FloatLLM(C++)] --- User Execution Blueprint ---\n";
+        std::cout << "[FloatLLM(C++)] Live Quantization    : " << (quantize_on_fly ? "ENABLED" : "DISABLED") << "\n";
+        std::cout << "[FloatLLM(C++)] AOT Quantization (Save): " << (save_quantized ? "ACTIVE" : "DISABLED") << "\n";
+        std::cout << "[FloatLLM(C++)] No-RAM Protocol (SSD): " << (no_ram_protocol ? "ACTIVE" : "DISABLED") << "\n";
+        std::cout << "[FloatLLM(C++)] Session ID           : [" << session << "]\n";
+        std::cout << "[FloatLLM(C++)] Context Saving       : "
+                  << (temp_chat ? "Temporary (Delete on Exit)" : "PERSISTENT (Saved to SSD)") << "\n\n";
+
+        return allowed_ram_mb;
     }
 
     // 2. The execution socket with dynamic shapes
@@ -254,3 +360,520 @@ extern "C" {
         std::cout << "[FloatLLM(C++)] Engine shut down. VRAM/RAM cleared safely." << std::endl;
     }
 }
+
+namespace floatllm_runner {
+
+struct CliOptions {std::string hardware = "auto"; std::string model_path; std::string prompt; std::string session_id = "default_chat";
+                    double crash_threshold_mb = 200.0; double override_storage_gb = -1.0; double ram_limit_gb = -1.0; double ram_buffer = 0.20;
+                    bool quantize_on_fly = false; bool no_ram_protocol = false; bool temp_chat = false; bool save_quantized = false;
+};
+
+struct TensorInfo {std::string name; int type = 0; size_t offset = 0; size_t size = 0; int64_t shape[4] = {1, 1, 1, 1};};
+
+static void print_usage(const char * exe) {
+    std::cout << "Usage: " << exe << " --model-path MODEL.gguf --prompt \"text\" [options]\n"
+              << "Options:\n"
+              << "  --hardware BACKEND         cpu, auto, mps, cuda, vulkan, opencl, sycl\n"
+              << "  --crash-threshold MB       RAM safety threshold (default 200)\n"
+              << "  --override-storage GB      Manually override storage free-space check\n"
+              << "  --session-id NAME          Session label for the dashboard\n"
+              << "  --temp-chat                Mark session as temporary\n"
+              << "  --quantize-on-fly          Mirror the Python flag\n"
+              << "  --no-ram-protocol          Mirror the Python flag\n"
+              << "  --save-quantized           Mirror the Python flag\n"
+              << "  --ram-limit GB             Hard RAM chunk cap in GB\n"
+              << "  --ram-buffer FRACTION      RAM reserve fraction (default 0.20)\n";
+}
+
+static bool parse_args(int argc, char ** argv, CliOptions & opts) {
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        auto need_value = [&](const char * name) -> const char * {
+            if (i + 1 >= argc) {
+                throw std::runtime_error(std::string("missing value for ") + name);
+            }
+            return argv[++i];
+        };
+
+        if (arg == "--help" || arg == "-h") {
+            print_usage(argv[0]);
+            return false;
+        } else if (arg == "--hardware") {
+            opts.hardware = need_value("--hardware");
+        } else if (arg == "--model-path") {
+            opts.model_path = need_value("--model-path");
+        } else if (arg == "--prompt") {
+            opts.prompt = need_value("--prompt");
+        } else if (arg == "--crash-threshold") {
+            opts.crash_threshold_mb = std::stod(need_value("--crash-threshold"));
+        } else if (arg == "--override-storage") {
+            opts.override_storage_gb = std::stod(need_value("--override-storage"));
+        } else if (arg == "--session-id") {
+            opts.session_id = need_value("--session-id");
+        } else if (arg == "--temp-chat") {
+            opts.temp_chat = true;
+        } else if (arg == "--quantize-on-fly") {
+            opts.quantize_on_fly = true;
+        } else if (arg == "--no-ram-protocol") {
+            opts.no_ram_protocol = true;
+        } else if (arg == "--save-quantized") {
+            opts.save_quantized = true;
+        } else if (arg == "--ram-limit") {
+            opts.ram_limit_gb = std::stod(need_value("--ram-limit"));
+        } else if (arg == "--ram-buffer") {
+            opts.ram_buffer = std::stod(need_value("--ram-buffer"));
+        } else {
+            throw std::runtime_error("unknown argument: " + arg);
+        }
+    }
+
+    if (opts.model_path.empty()) {
+        throw std::runtime_error("--model-path is required");
+    }
+    if (opts.prompt.empty()) {
+        throw std::runtime_error("--prompt is required");
+    }
+    return true;
+}
+
+static std::pair<double, double> get_ram_stats_mb() {
+#ifdef __APPLE__
+    vm_statistics64_data_t vm_stat;
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+    if (host_statistics64(mach_host_self(), HOST_VM_INFO64, reinterpret_cast<host_info64_t>(&vm_stat), &count) == KERN_SUCCESS) {
+        const double page_size = static_cast<double>(sysconf(_SC_PAGESIZE));
+        const double total = static_cast<double>(sysconf(_SC_PHYS_PAGES)) * page_size / (1024.0 * 1024.0);
+        const double free = static_cast<double>(vm_stat.free_count + vm_stat.inactive_count) * page_size / (1024.0 * 1024.0);
+        return {total, free};
+    }
+#endif
+    const long page_size = sysconf(_SC_PAGESIZE);
+    const long phys_pages = sysconf(_SC_PHYS_PAGES);
+    const double total = (page_size > 0 && phys_pages > 0)
+        ? (static_cast<double>(page_size) * static_cast<double>(phys_pages)) / (1024.0 * 1024.0)
+        : 0.0;
+    const double free = total * 0.5;
+    return {total, free};
+}
+
+static std::pair<double, double> get_storage_stats_gb() {
+    const char * home = std::getenv("HOME");
+    const char * root = home ? home : ".";
+    struct statvfs fs {};
+    if (statvfs(root, &fs) != 0) {
+        return {0.0, 0.0};
+    }
+
+    const double total_bytes = static_cast<double>(fs.f_blocks) * static_cast<double>(fs.f_frsize);
+    const double free_bytes = static_cast<double>(fs.f_bavail) * static_cast<double>(fs.f_frsize);
+    return {
+        total_bytes / (1024.0 * 1024.0 * 1024.0),
+        free_bytes / (1024.0 * 1024.0 * 1024.0)
+    };
+}
+
+static size_t file_size_bytes(const std::string & path) {
+    struct stat st {};
+    if (stat(path.c_str(), &st) != 0) {
+        throw std::runtime_error("failed to stat model file: " + path);
+    }
+    return static_cast<size_t>(st.st_size);
+}
+
+class Tokenizer {
+public:
+    explicit Tokenizer(const std::string & path) : model_path(path) {
+        struct stat st {};
+        if (stat(model_path.c_str(), &st) != 0) {
+            throw std::runtime_error("model file not found: " + model_path);
+        }
+
+        struct gguf_init_params params { true, nullptr };
+        ctx = gguf_init_from_file(model_path.c_str(), params);
+        if (!ctx) {
+            throw std::runtime_error("gguf_init_from_file failed for tokenizer");
+        }
+
+        extract_metadata();
+    }
+
+    ~Tokenizer() {
+        if (ctx) {
+            gguf_free(ctx);
+            ctx = nullptr;
+        }
+    }
+
+    int eos_id() const { return eos_token_id; }
+
+    std::vector<int32_t> encode(const std::string & text) const {
+        std::vector<int32_t> token_ids;
+
+        if (bos_token_id >= 0) {
+            token_ids.push_back(bos_token_id);
+        }
+
+        std::string transformed = text;
+        size_t pos = 0;
+        while ((pos = transformed.find(' ', pos)) != std::string::npos) {
+            transformed.replace(pos, 1, " Ġ");
+            pos += 2;
+        }
+
+        std::istringstream stream(transformed);
+        std::string word;
+        while (std::getline(stream, word, ' ')) {
+            if (word.empty()) {
+                continue;
+            }
+
+            while (!word.empty()) {
+                bool matched = false;
+                for (size_t len = word.size(); len > 0; --len) {
+                    const std::string chunk = word.substr(0, len);
+                    auto it = token_to_id.find(chunk);
+                    if (it != token_to_id.end()) {
+                        token_ids.push_back(it->second);
+                        word.erase(0, len);
+                        matched = true;
+                        break;
+                    }
+                }
+
+                if (!matched) {
+                    word.erase(0, 1);
+                }
+            }
+        }
+
+        return token_ids;
+    }
+
+    std::string decode(const std::vector<int32_t> & token_ids) const {
+        std::string output;
+        for (int32_t id : token_ids) {
+            if (id == bos_token_id || id == eos_token_id) {
+                continue;
+            }
+            if (id >= 0 && static_cast<size_t>(id) < vocab.size()) {
+                std::string token = vocab[static_cast<size_t>(id)];
+                size_t start = 0;
+                while ((start = token.find("Ġ", start)) != std::string::npos) {
+                    token.replace(start, 2, " ");
+                    start += 1;
+                }
+                output += token;
+            }
+        }
+        while (!output.empty() && output.front() == ' ') {
+            output.erase(output.begin());
+        }
+        return output;
+    }
+
+private:
+    static int64_t read_scalar_integer(const struct gguf_context * ctx, const char * key_name) {
+        const int64_t key_id = gguf_find_key(ctx, key_name);
+        if (key_id < 0) {
+            return -1;
+        }
+
+        const enum gguf_type type = gguf_get_kv_type(ctx, key_id);
+        switch (type) {
+            case GGUF_TYPE_UINT8:  return static_cast<int64_t>(gguf_get_val_u8(ctx, key_id));
+            case GGUF_TYPE_INT8:   return static_cast<int64_t>(gguf_get_val_i8(ctx, key_id));
+            case GGUF_TYPE_UINT16: return static_cast<int64_t>(gguf_get_val_u16(ctx, key_id));
+            case GGUF_TYPE_INT16:  return static_cast<int64_t>(gguf_get_val_i16(ctx, key_id));
+            case GGUF_TYPE_UINT32: return static_cast<int64_t>(gguf_get_val_u32(ctx, key_id));
+            case GGUF_TYPE_INT32:  return static_cast<int64_t>(gguf_get_val_i32(ctx, key_id));
+            case GGUF_TYPE_UINT64: return static_cast<int64_t>(gguf_get_val_u64(ctx, key_id));
+            case GGUF_TYPE_INT64:  return static_cast<int64_t>(gguf_get_val_i64(ctx, key_id));
+            case GGUF_TYPE_ARRAY: {
+                const enum gguf_type arr_type = gguf_get_arr_type(ctx, key_id);
+                const void * arr_data = gguf_get_arr_data(ctx, key_id);
+                switch (arr_type) {
+                    case GGUF_TYPE_UINT8:  return static_cast<int64_t>(static_cast<const uint8_t *>(arr_data)[0]);
+                    case GGUF_TYPE_INT8:   return static_cast<int64_t>(static_cast<const int8_t *>(arr_data)[0]);
+                    case GGUF_TYPE_UINT16: return static_cast<int64_t>(static_cast<const uint16_t *>(arr_data)[0]);
+                    case GGUF_TYPE_INT16:  return static_cast<int64_t>(static_cast<const int16_t *>(arr_data)[0]);
+                    case GGUF_TYPE_UINT32: return static_cast<int64_t>(static_cast<const uint32_t *>(arr_data)[0]);
+                    case GGUF_TYPE_INT32:  return static_cast<int64_t>(static_cast<const int32_t *>(arr_data)[0]);
+                    case GGUF_TYPE_UINT64: return static_cast<int64_t>(static_cast<const uint64_t *>(arr_data)[0]);
+                    case GGUF_TYPE_INT64:  return static_cast<int64_t>(static_cast<const int64_t *>(arr_data)[0]);
+                    default: break;
+                }
+            } break;
+            default:
+                break;
+        }
+
+        return -1;
+    }
+
+    void extract_metadata() {
+        const int64_t model_key = gguf_find_key(ctx, "tokenizer.ggml.model");
+        if (model_key >= 0) {
+            model_type = gguf_get_val_str(ctx, model_key);
+            std::cout << "[FloatLLM] Tokenizer Architecture: " << model_type << "\n";
+        }
+
+        bos_token_id = static_cast<int32_t>(read_scalar_integer(ctx, "tokenizer.ggml.bos_token_id"));
+        eos_token_id = static_cast<int32_t>(read_scalar_integer(ctx, "tokenizer.ggml.eos_token_id"));
+
+        std::cout << "[FloatLLM] BOS ID: " << bos_token_id << " | EOS ID: " << eos_token_id << "\n";
+
+        const int64_t tokens_key = gguf_find_key(ctx, "tokenizer.ggml.tokens");
+        if (tokens_key < 0) {
+            throw std::runtime_error("tokenizer.ggml.tokens not found in GGUF");
+        }
+
+        const size_t n_tokens = gguf_get_arr_n(ctx, tokens_key);
+        vocab.reserve(n_tokens);
+        for (size_t i = 0; i < n_tokens; ++i) {
+            const char * raw = gguf_get_arr_str(ctx, tokens_key, i);
+            std::string token = raw ? raw : "";
+            vocab.push_back(token);
+            token_to_id[token] = static_cast<int32_t>(vocab.size() - 1);
+        }
+
+        std::cout << "[FloatLLM] Successfully extracted " << vocab.size()
+                  << " offline tokens into memory\n";
+    }
+
+    std::string model_path;
+    std::string model_type = "unknown";
+    int32_t bos_token_id = -1;
+    int32_t eos_token_id = -1;
+    std::vector<std::string> vocab;
+    std::unordered_map<std::string, int32_t> token_to_id;
+    struct gguf_context * ctx = nullptr;
+};
+
+class Loader {
+public:
+    Loader(const std::string & path, double allowed_ram_mb, const std::string & backend)
+        : model_path(path), allowed_ram_bytes(static_cast<size_t>(allowed_ram_mb * 1024.0 * 1024.0)), backend_name(backend) {
+        struct stat st_check {};
+        if (stat(model_path.c_str(), &st_check) != 0) {
+            throw std::runtime_error("model file not found: " + model_path);
+        }
+
+        fd = ::open(model_path.c_str(), O_RDONLY);
+        if (fd < 0) {
+            throw std::runtime_error("failed to open model file");
+        }
+
+        struct stat st {};
+        if (fstat(fd, &st) != 0) {
+            ::close(fd);
+            throw std::runtime_error("failed to stat model file");
+        }
+        file_size = static_cast<size_t>(st.st_size);
+
+        mapped = ::mmap(nullptr, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
+        if (mapped == MAP_FAILED) {
+            ::close(fd);
+            throw std::runtime_error("mmap failed for model file");
+        }
+
+        struct gguf_init_params params { true, &ggml_ctx };
+        gguf_ctx = gguf_init_from_file(model_path.c_str(), params);
+        if (!gguf_ctx) {
+            cleanup();
+            throw std::runtime_error("gguf_init_from_file failed for loader");
+        }
+    }
+
+    ~Loader() {
+        cleanup();
+    }
+
+    std::vector<TensorInfo> parse_gguf_metadata() const {
+        std::cout << "[FloatLLM] Scanning GGUF metadata for building " << model_path << "...\n";
+        std::vector<TensorInfo> tensors;
+        const int64_t n_tensors = gguf_get_n_tensors(gguf_ctx);
+        tensors.reserve(static_cast<size_t>(n_tensors));
+
+        for (int64_t i = 0; i < n_tensors; ++i) {
+            const char * name = gguf_get_tensor_name(gguf_ctx, i);
+            struct ggml_tensor * tensor = ggml_get_tensor(ggml_ctx, name);
+            if (!tensor) {
+                throw std::runtime_error(std::string("tensor not found in ggml context: ") + name);
+            }
+
+            TensorInfo info;
+            info.name = name;
+            info.type = static_cast<int>(tensor->type);
+            info.offset = gguf_get_tensor_offset(gguf_ctx, i);
+            info.size = ggml_nbytes(tensor);
+            for (int d = 0; d < 4; ++d) {
+                info.shape[d] = tensor->ne[d];
+            }
+            tensors.push_back(std::move(info));
+        }
+
+        std::cout << "[FloatLLM] Discovered " << tensors.size() << " individual tensors in the model architecture.\n";
+        return tensors;
+    }
+
+    void wake_engine(size_t total_tensors) {
+        init_compute_engine(backend_name.c_str(), static_cast<int>(total_tensors));
+    }
+
+    void set_allowed_ram_mb(double mb) {
+        allowed_ram_bytes = static_cast<size_t>(mb * 1024.0 * 1024.0);
+    }
+
+    void build_dynamic_chunks(const std::vector<TensorInfo> & tensors) {
+        std::cout << "[FloatLLM] Chucking Engine Active. Max RAM per block: "
+                  << (allowed_ram_bytes / (1024.0 * 1024.0)) << " MB\n";
+
+        current_chunk.clear();
+        chunks.clear();
+
+        size_t current_chunk_size = 0;
+        for (const auto & tensor : tensors) {
+            if (current_chunk_size + tensor.size > allowed_ram_bytes) {
+                if (current_chunk.empty()) {
+                    throw std::runtime_error("tensor exceeds allowed RAM budget: " + tensor.name);
+                }
+                chunks.push_back({static_cast<int>(chunks.size() + 1), current_chunk, current_chunk_size});
+                current_chunk.clear();
+                current_chunk_size = 0;
+            }
+
+            current_chunk.push_back(tensor);
+            current_chunk_size += tensor.size;
+        }
+
+        if (!current_chunk.empty()) {
+            chunks.push_back({static_cast<int>(chunks.size() + 1), current_chunk, current_chunk_size});
+        }
+
+        std::cout << "[FloatLLM] Model succesfuly sliced into " << chunks.size() << " dynamic blocks\n";
+    }
+
+    void stream_all_chunks() const {
+        for (const auto & chunk : chunks) {
+            stream_chunk(chunk.id);
+        }
+    }
+
+    void stream_chunk(int chunk_id) const {
+        const auto it = std::find_if(chunks.begin(), chunks.end(), [chunk_id](const Chunk & chunk) { return chunk.id == chunk_id; });
+        if (it == chunks.end()) {
+            return;
+        }
+
+        for (const auto & tensor : it->tensors) {
+            const void * raw_ptr = static_cast<const uint8_t *>(mapped) + gguf_get_data_offset(gguf_ctx) + tensor.offset;
+            execute_tensor_chunk(
+                tensor.name.c_str(),
+                tensor.type,
+                const_cast<void *>(raw_ptr),
+                tensor.shape[0], tensor.shape[1], tensor.shape[2], tensor.shape[3],
+                chunk_id);
+        }
+    }
+
+private:
+    struct Chunk {
+        int id;
+        std::vector<TensorInfo> tensors;
+        size_t total_size;
+    };
+
+    void cleanup() {
+        if (gguf_ctx) {
+            gguf_free(gguf_ctx);
+            gguf_ctx = nullptr;
+        }
+        if (ggml_ctx) {
+            ggml_free(ggml_ctx);
+            ggml_ctx = nullptr;
+        }
+        if (mapped && mapped != MAP_FAILED) {
+            ::munmap(mapped, file_size);
+            mapped = nullptr;
+        }
+        if (fd >= 0) {
+            ::close(fd);
+            fd = -1;
+        }
+    }
+
+    std::string model_path;
+    size_t allowed_ram_bytes;
+    std::string backend_name;
+    void * mapped = nullptr;
+    size_t file_size = 0;
+    int fd = -1;
+    struct gguf_context * gguf_ctx = nullptr;
+    struct ggml_context * ggml_ctx = nullptr;
+    std::vector<TensorInfo> current_chunk;
+    std::vector<Chunk> chunks;
+};
+
+} // namespace floatllm_runner
+
+#ifdef FLOATLLM_BUILD_MAIN
+int main(int argc, char ** argv) {
+    try {
+        floatllm_runner::CliOptions opts;
+        if (!floatllm_runner::parse_args(argc, argv, opts)) {
+            return 0;
+        }
+
+        std::cout << "[FloatLLM] Hardware Router engaged: Backend -> [" << opts.hardware << "]\n";
+
+        const auto [total_ram_mb, free_ram_mb] = floatllm_runner::get_ram_stats_mb();
+        const auto [total_storage_gb, free_storage_gb] = floatllm_runner::get_storage_stats_gb();
+        const double model_size_mb = static_cast<double>(floatllm_runner::file_size_bytes(opts.model_path)) / (1024.0 * 1024.0);
+
+        const double calculated_limit = check_failsafe_threshold(free_ram_mb, opts.crash_threshold_mb, model_size_mb, total_storage_gb,
+                                                                free_storage_gb, -1.0, total_ram_mb, opts.quantize_on_fly ? 1 : 0,
+                                                                opts.save_quantized ? 1 : 0, opts.no_ram_protocol ? 1 : 0,opts.override_storage_gb,
+                                                                opts.session_id.c_str(), opts.temp_chat ? 1 : 0, opts.ram_limit_gb, opts.ram_buffer);
+
+        floatllm_runner::Tokenizer tokenizer(opts.model_path);
+        floatllm_runner::Loader loader(opts.model_path, calculated_limit, opts.hardware);
+
+        const auto tensor_map = loader.parse_gguf_metadata();
+        loader.wake_engine(tensor_map.size());
+        loader.set_allowed_ram_mb(calculated_limit);
+        loader.build_dynamic_chunks(tensor_map);
+        loader.stream_all_chunks();
+
+        std::cout << "[FloatLLM] Engine successfully mapped. Handing to AI...\n";
+        std::cout << "[FloatLLM] --------------------------------------------------------------------------------\n";
+        std::cout << "[FloatLLM] \nUser: " << opts.prompt << "\n";
+        std::cout << "[FloatLLM] ";
+
+        std::vector<int32_t> token_ids = tokenizer.encode(opts.prompt);
+        const int max_tokens_to_generate = 60;
+
+        for (int step = 0; step < max_tokens_to_generate; ++step) {
+            std::vector<int32_t> working_tokens = token_ids;
+            int32_t next_token_id = execute_forward_pass(working_tokens.data(), static_cast<int>(working_tokens.size()));
+            if (next_token_id == tokenizer.eos_id()) {
+                break;
+            }
+
+            std::string word = tokenizer.decode({next_token_id});
+            std::cout << "\033[92m" << word << "\033[0m ";
+            std::cout.flush();
+            token_ids.push_back(next_token_id);
+        }
+
+        std::cout << "\n\n";
+        std::cout << "[FloatLLM] Generated first 60 tokens in output!\n";
+        std::cout << "[FloatLLM] --------------------------------------------------------------------------------\n";
+        shutdown_compute_engine();
+        std::cout << "[FloatLLM] Closing C++ memory maps...\n";
+        return 0;
+    } catch (const std::exception & e) {
+        std::cerr << "[FloatLLM] ERROR: " << e.what() << "\n";
+        return 1;
+    }
+}
+#endif

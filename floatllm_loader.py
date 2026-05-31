@@ -81,6 +81,15 @@ class FloatLLM_Loader:
         self.cpp_engine.execute_forward_pass.argtypes = [ctypes.POINTER(ctypes.c_int32), ctypes.c_int]
         self.cpp_engine.execute_forward_pass.restype = ctypes.c_int32
 
+        self.cpp_engine.check_failsafe_threshold.argtypes = [
+            ctypes.c_double, ctypes.c_double, ctypes.c_double,
+            ctypes.c_double, ctypes.c_double, ctypes.c_double,
+            ctypes.c_double, ctypes.c_int, ctypes.c_int,
+            ctypes.c_int, ctypes.c_double, ctypes.c_char_p,
+            ctypes.c_int, ctypes.c_double, ctypes.c_double
+        ]
+        self.cpp_engine.check_failsafe_threshold.restype = ctypes.c_double
+
     def wake_engine(self, total_tensors):
         """Fires the wake-up signal safely after metadata is parsed"""
         self.cpp_engine.init_compute_engine(self.backend_name.encode('utf-8'), total_tensors)

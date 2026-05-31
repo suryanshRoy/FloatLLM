@@ -54,3 +54,46 @@ endif()
 if(GGML_KOMPUTE)
     target_link_libraries(floatllm_compute PRIVATE ggml-kompute)
 endif()
+
+# build a runnable C++ entrypoint from floatllm_compute.cpp
+add_executable(floatllm_run floatllm_compute.cpp)
+target_compile_definitions(floatllm_run PRIVATE FLOATLLM_BUILD_MAIN)
+
+set_target_properties(floatllm_run PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
+target_include_directories(floatllm_run PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+)
+
+target_link_libraries(floatllm_run PRIVATE ggml ggml-base ggml-cpu)
+
+if(APPLE)
+    target_link_libraries(floatllm_run PRIVATE ggml-metal)
+endif()
+
+if(GGML_CUDA)
+    target_link_libraries(floatllm_run PRIVATE ggml-cuda)
+endif()
+
+if(GGML_VULKAN)
+    target_link_libraries(floatllm_run PRIVATE ggml-vulkan)
+endif()
+
+if(GGML_OPENCL)
+    target_link_libraries(floatllm_run PRIVATE ggml-opencl)
+endif()
+
+if(GGML_HIP)
+    target_link_libraries(floatllm_run PRIVATE ggml-hip)
+endif()
+
+if(GGML_SYCL)
+    target_link_libraries(floatllm_run PRIVATE ggml-sycl)
+endif()
+
+if(GGML_KOMPUTE)
+    target_link_libraries(floatllm_run PRIVATE ggml-kompute)
+endif()
