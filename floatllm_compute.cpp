@@ -36,9 +36,12 @@ std::string resolve_backend_name(const std::string& input_name) {
     if (lower_name == "cuda") return "CUDA";
     if (lower_name == "metal" || lower_name == "mps") return "Metal";
     if (lower_name == "vulkan") return "Vulkan";
+    if (lower_name == "vulkan_kompute") return "Vulkan";
     if (lower_name == "opencl") return "OpenCL";
+    if (lower_name == "npu_ascend") return "OpenCL";
     if (lower_name == "rocm" || lower_name == "hip") return "CUDA"; // ggml maps HIP to CUDA interface internally
     if (lower_name == "oneapi" || lower_name == "sycl") return "SYCL";
+    if (lower_name == "xpu") return "SYCL";
     if (lower_name == "directx" || lower_name == "kompute") return "Kompute";
 
     return input_name; // fallback
@@ -79,7 +82,7 @@ extern "C" {
             backend = ggml_backend_init_best(); // for auto default behaviour
         }
         else {
-            // Automatically handle Metal, Vulkan, CUDA, etc.
+            // handle Metal, Vulkan, CUDA, etc.
             backend = ggml_backend_init_by_name(target_hw.c_str(), NULL);
         }
 
@@ -89,7 +92,7 @@ extern "C" {
             backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, NULL);
         }
 
-        // --- Dynamically calculate allocation memory size
+        // calculate allocation memory size
         size_t tensor_overhead = ggml_tensor_overhead();
         size_t slack_buffer = 4 * 1024 * 1024; // 4MB safety buffer for extreme large models
         size_t dynamic_mem_size = (total_tensors * tensor_overhead) + slack_buffer;
@@ -333,7 +336,7 @@ extern "C" {
             }
         }
 
-        // --- RESTORE THE PYTHON RAM POINTERS FOR THE NEXT GENERATION LOOP ---
+        // Restore the python RAM pointers for nexxt generation loop
         token_embd->data = raw_embd_ptr;
         output_weight->data = raw_out_ptr;
 
@@ -362,6 +365,28 @@ extern "C" {
 }
 
 namespace floatllm_runner {
+
+static std::string detect_hardware_backend() {
+#if defined(__APPLE__)
+    return "mps";
+#elif defined(__ANDROID__)
+    if (access("/system/lib64/libvulkan.so", F_OK) == 0 || access("/system/lib/libvulkan.so", F_OK) == 0) {
+        return "vulkan_kompute";
+    }
+    return "native_arm";
+#elif defined(__linux__)
+    if (access("/usr/bin/vulkaninfo", X_OK) == 0 || access("/usr/local/bin/vulkaninfo", X_OK) == 0 ||
+        access("/system/lib64/libvulkan.so", F_OK) == 0 || access("/system/lib/libvulkan.so", F_OK) == 0) {
+        return "vulkan_kompute";
+    }
+#if defined(__aarch64__) || defined(__arm__)
+    return "native_arm";
+#endif
+    return "cpu";
+#else
+    return "cpu";
+#endif
+}
 
 struct CliOptions {std::string hardware = "auto"; std::string model_path; std::string prompt; std::string session_id = "default_chat";
                     double crash_threshold_mb = 200.0; double override_storage_gb = -1.0; double ram_limit_gb = -1.0; double ram_buffer = 0.20;
@@ -824,7 +849,14 @@ int main(int argc, char ** argv) {
             return 0;
         }
 
-        std::cout << "[FloatLLM] Hardware Router engaged: Backend -> [" << opts.hardware << "]\n";
+        std::string selected_backend = opts.hardware;
+        std::string lower_backend = selected_backend;
+        std::transform(lower_backend.begin(), lower_backend.end(), lower_backend.begin(), ::tolower);
+        if (lower_backend == "auto") {
+            selected_backend = floatllm_runner::detect_hardware_backend();
+        }
+
+        std::cout << "[FloatLLM] Hardware Router engaged: Backend -> [" << selected_backend << "]\n";
 
         const auto [total_ram_mb, free_ram_mb] = floatllm_runner::get_ram_stats_mb();
         const auto [total_storage_gb, free_storage_gb] = floatllm_runner::get_storage_stats_gb();
@@ -836,7 +868,7 @@ int main(int argc, char ** argv) {
                                                                 opts.session_id.c_str(), opts.temp_chat ? 1 : 0, opts.ram_limit_gb, opts.ram_buffer);
 
         floatllm_runner::Tokenizer tokenizer(opts.model_path);
-        floatllm_runner::Loader loader(opts.model_path, calculated_limit, opts.hardware);
+        floatllm_runner::Loader loader(opts.model_path, calculated_limit, selected_backend);
 
         const auto tensor_map = loader.parse_gguf_metadata();
         loader.wake_engine(tensor_map.size());
