@@ -17,36 +17,11 @@ This allows massive architectures to execute natively on anything from an Apple 
 
 ---
 
-## 🏗️ Project Architecture & Status
 
-FloatLLM is being developed in these stages:
-
-### ✅ Phase 1 (Hardware Router) - `floatllm_router.py`
-The master entry point. The router dynamically interrogates the host machine's hardware, evaluating total RAM, free RAM, and SSD capacity. 
-* **Hardware Agnostic:** Automatically routes compute workloads based on host detection.
-* **Failsafe Math:** Calculates strict safety thresholds, ensuring a configurable buffer (default 20%) is always left free for the operating system and dynamic KV Cache context.
-* **Absolute Control:** Allows users to manually force RAM limits to run multi-gigabyte models through ultra-tight memory constraints.
-
-### ✅ Phase 2 (Memory Loader) - `floatllm_loader.py`
-The physical memory mapper. 
-* **Metadata Parsing:** Uses the official `gguf` library to scan the model header, discovering exact tensor byte offsets without loading the massive payload.
-* **Dynamic Slicing:** Takes the safety limits and mathematically groups hundreds of tensors into safe execution blocks.
-* **Zero-Copy Streaming:** Utilizes a read-only `mmap` bridge to swap execution chunks in and out of RAM at maximum SSD read speeds. 
-
-### ✅ Phase 3 (Inference Engine) - floatllm_compute.cpp
-The bare-metal execution layer utilizing `ggml`.
-* **Hardware Binding:** Dynamically binds zero-copy Python memory maps to dedicated GPU cores (Metal, CUDA, Vulkan).
-* **VRAM Detachment:** Securely detaches CPU memory pointers to prevent OS-level segmentation faults, allowing the GPU allocator to provision safe computational VRAM on the fly.
-
-### ✅ Phase 4 (Tokenizer) - floatllm_tokenizer.py
-The translation layer.
-* **100% Offline Generation:** Dynamically reads the internal `tokenizer.ggml.tokens` array directly from the GGUF file. Zero API calls, zero internet dependency.
-* **Dynamic Handling:** Automatically scales between 1B and 405B parameter models, supporting all standard tokenization architectures.
-
-### Phase 5 (Generation loop) - Active (Raw logit streaming test) 
-The output interface.
-* **Note:** Currently bypasses hidden layers to stress-test the zero-copy *VRAM* buffer allocation and streaming loop stability.
-* **Generation loop:** Pipeline integrated. Prompt integers are passed securely across the `ctypes` bridge, processed through the GPU, and streamed back horizontally to the user terminal in real-time.
+## The development process
+> [!NOTE]
+> This project is being developed right now using AI to convert the initial python completely to the c++ for a faster execution and low python crashes, due to c++ mid-level language benefits for control over memory!
+> I am still supervising the whole AI generated code so I could fix AI errors and have a cleaner flow when this python get's completely removed and c++ actually starts executing everything through a single code!
 
 ---
 
@@ -108,46 +83,44 @@ brew install cmake
 **For Apple Silicon (Metal/MPS):**
 ```bash
 cmake -B build -DGGML_DIR=/path/to/ggml
-cmake --build build --config Release -j 4
+cmake --build build --config Release -j 4 --target run_llm
 ```
 **For NVIDIA GPU (CUDA):**
 ```bash
 cmake -B build -DGGML_CUDA=ON -DGGML_DIR=/path/to/ggml
-cmake --build build --config Release -j 4
+cmake --build build --config Release -j 4 --target run_llm
 ```
 **For Vulkan GPU:**
 ```bash
 cmake -B build -DGGML_VULKAN=ON -DGGML_DIR=/path/to/ggml
-cmake --build build --config Release -j 4
+cmake --build build --config Release -j 4 --target run_llm
 ```
 **For OpenCL:**
 ```bash
 cmake -B build -DGGML_OPENCL=ON -DGGML_DIR=/path/to/ggml
-cmake --build build --config Release -j 4
+cmake --build build --config Release -j 4 --target run_llm
 ```
 **For SYCL (Intel OneAPI):**
 ```bash
 cmake -B build -DGGML_SYCL=ON -DGGML_DIR=/path/to/ggml
-cmake --build build --config Release -j 4
+cmake --build build --config Release -j 4 --target run_llm
 ```
 **For Kompute / DirectX:**
 ```bash
 cmake -B build -DGGML_KOMPUTE=ON -DGGML_DIR=/path/to/ggml
-cmake --build build --config Release -j 4
+cmake --build build --config Release -j 4 --target run_llm
 ```
 **For CPU-Only / Native ARM:**
 ```bash
 cmake -B build -DGGML_DIR=/path/to/ggml
-cmake --build build --config Release -j 4
+cmake --build build --config Release -j 4 --target run_llm
 ``` 
 
 ### 5. Run the Engine
 * Execute the router, pointing it to a local .gguf file:
 ```bash
-python floatllm_router.py --hardware auto --model-path /path/to/your/model.gguf --prompt "What is the capital of France?"
+./run_llm --hardware auto --model-path /path/to/your/model.gguf --prompt "What is the capital of France?"
 ```
 
 ## 🤖 AI Acknowledgement
-FloatLLM was fundamentally driven by human architectural design, but AI tools were actively leveraged as collaborative research and debugging assistants. I acted as the core systems architect, directing the routing logic, memory management, and broad structural shifts. 
-
-During development, **Google Search AI Overviews** were utilized for researching core concepts and discovering cross-platform C++ libraries. **Gemini** was heavily utilized as a debugging partner to help troubleshoot the project's most difficult technical hurdles. Specifically, Gemini assisted in debugging the bare-metal C++ inference engine crashes, optimizing tensor management within the Python loader, and resolving complex OS-specific `ggml` bugs. All final implementations and architectural decisions were independently executed and tested.
+FloatLLM was made by human(Me), but AI tools were actively used for researching and debugging assitant. I acted as the systems architect, directing every logic, memory management, and new structural shifts. 
