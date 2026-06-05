@@ -11,11 +11,15 @@
 #include <fstream>
 #include <stdexcept>
 #include <utility>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <sys/mman.h>
-#include <sys/stat.h>
 #include <sys/statvfs.h>
-#include <fcntl.h>
 #include <unistd.h>
+#endif
+#include <sys/stat.h>
+#include <fcntl.h>
 
 #include "ggml.h"
 #include "ggml-backend.h"
@@ -462,7 +466,16 @@ static bool parse_args(int argc, char ** argv, CliOptions & opts) {
 }
 
 static std::pair<double, double> get_ram_stats_mb() {
-#ifdef __APPLE__
+#ifdef _WIN32
+    MEMORYSTATUSEX statex;
+    statex.dwLength = sizeof(statex);
+    if (GlobalMemoryStatusEx(&statex)) {
+        double total_mb = static_cast<double>(statex.ullTotalPhys) / (1024.0 * 1024.0);
+        double free_mb = static_cast<double>(statex.ullAvailPhys) / (1024.0 * 1024.0);
+        return {total_mb, free_mb};
+    }
+    return {0.0, 0.0};
+#elif defined(__APPLE__)
     vm_statistics64_data_t vm_stat;
     mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
     if (host_statistics64(mach_host_self(), HOST_VM_INFO64, reinterpret_cast<host_info64_t>(&vm_stat), &count) == KERN_SUCCESS) {
@@ -482,6 +495,15 @@ static std::pair<double, double> get_ram_stats_mb() {
 }
 
 static std::pair<double, double> get_storage_stats_gb() {
+#ifdef _WIN32
+    ULARGE_INTEGER freeBytesAvailable, totalNumberOfBytes, totalNumberOfFreeBytes;
+    if (GetDiskFreeSpaceExA(".", &freeBytesAvailable, &totalNumberOfBytes, &totalNumberOfFreeBytes)) {
+        double total_gb = static_cast<double>(totalNumberOfBytes.QuadPart) / (1024.0 * 1024.0 * 1024.0);
+        double free_gb = static_cast<double>(freeBytesAvailable.QuadPart) / (1024.0 * 1024.0 * 1024.0);
+        return {total_gb, free_gb};
+    }
+    return {0.0, 0.0};
+#else
     const char * home = std::getenv("HOME");
     const char * root = home ? home : ".";
     struct statvfs fs {};
@@ -495,6 +517,7 @@ static std::pair<double, double> get_storage_stats_gb() {
         total_bytes / (1024.0 * 1024.0 * 1024.0),
         free_bytes / (1024.0 * 1024.0 * 1024.0)
     };
+#endif
 }
 
 static size_t file_size_bytes(const std::string & path) {
@@ -683,6 +706,32 @@ public:
             throw std::runtime_error("model file not found: " + model_path);
         }
 
+#ifdef _WIN32
+        file_handle = CreateFileA(model_path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file_handle == INVALID_HANDLE_VALUE) {
+            throw std::runtime_error("failed to open model file: " + model_path);
+        }
+        
+        LARGE_INTEGER li;
+        if (!GetFileSizeEx(file_handle, &li)) {
+            CloseHandle(file_handle);
+            throw std::runtime_error("failed to stat model file");
+        }
+        file_size = static_cast<size_t>(li.QuadPart);
+        
+        map_handle = CreateFileMappingA(file_handle, nullptr, PAGE_READONLY, 0, 0, nullptr);
+        if (!map_handle) {
+            CloseHandle(file_handle);
+            throw std::runtime_error("CreateFileMapping failed for model file");
+        }
+        
+        mapped = MapViewOfFile(map_handle, FILE_MAP_READ, 0, 0, 0);
+        if (!mapped) {
+            CloseHandle(map_handle);
+            CloseHandle(file_handle);
+            throw std::runtime_error("MapViewOfFile failed for model file");
+        }
+#else
         fd = ::open(model_path.c_str(), O_RDONLY);
         if (fd < 0) {
             throw std::runtime_error("failed to open model file");
@@ -700,6 +749,7 @@ public:
             ::close(fd);
             throw std::runtime_error("mmap failed for model file");
         }
+#endif
 
         struct gguf_init_params params { true, &ggml_ctx };
         gguf_ctx = gguf_init_from_file(model_path.c_str(), params);
@@ -817,6 +867,20 @@ private:
             ggml_free(ggml_ctx);
             ggml_ctx = nullptr;
         }
+#ifdef _WIN32
+        if (mapped) {
+            UnmapViewOfFile(mapped);
+            mapped = nullptr;
+        }
+        if (map_handle) {
+            CloseHandle(map_handle);
+            map_handle = nullptr;
+        }
+        if (file_handle != INVALID_HANDLE_VALUE) {
+            CloseHandle(file_handle);
+            file_handle = INVALID_HANDLE_VALUE;
+        }
+#else
         if (mapped && mapped != MAP_FAILED) {
             ::munmap(mapped, file_size);
             mapped = nullptr;
@@ -825,6 +889,7 @@ private:
             ::close(fd);
             fd = -1;
         }
+#endif
     }
 
     std::string model_path;
@@ -832,7 +897,12 @@ private:
     std::string backend_name;
     void * mapped = nullptr;
     size_t file_size = 0;
+#ifdef _WIN32
+    HANDLE file_handle = INVALID_HANDLE_VALUE;
+    HANDLE map_handle = nullptr;
+#else
     int fd = -1;
+#endif
     struct gguf_context * gguf_ctx = nullptr;
     struct ggml_context * ggml_ctx = nullptr;
     std::vector<TensorInfo> current_chunk;
