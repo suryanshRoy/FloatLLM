@@ -20,6 +20,7 @@ ENV/
 build/
 CMakeCache.txt
 CMakeFiles/
+runFloatLLM
 
 # Large AI Model Files
 *.gguf
