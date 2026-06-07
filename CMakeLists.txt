@@ -1,99 +1,73 @@
 cmake_minimum_required(VERSION 3.14)
 project(FloatLLM)
 
+include(FetchContent)
+set(GGML_GIT_TAG "master" CACHE STRING "The Git branch, tag, or commit hash for GGML")
+
+FetchContent_Declare(
+    ggml
+    GIT_REPOSITORY https://github.com/ggerganov/ggml.git
+    GIT_TAG        ${GGML_GIT_TAG}
+)
+
+message(STATUS "[FloatLLM] Fetching GGML version: ${GGML_GIT_TAG}...")
+FetchContent_MakeAvailable(ggml)
+
 set(CMAKE_CXX_STANDARD 17)
 
-# Require the user to define where their ggml folder is located
-if(NOT DEFINED GGML_DIR)
-    message(FATAL_ERROR "\n❌ GGML_DIR is not defined!\n FloatLLM requires the ggml library to compile. \nPlease download the ggml and pass its path to CMake using: -DGGML_DIR=/path/to/ggml\n")
-endif()
+set(FLOATLLM_CORE
+    src/FloatEngine.cpp
+    src/FloatTokenizer.cpp
+    src/FloatLoader.cpp
+)
 
-add_subdirectory(${GGML_DIR} ${CMAKE_CURRENT_BINARY_DIR}/ggml_build)
+# shared library
+add_library(FloatLLM SHARED ${FLOATLLM_CORE})
 
-# build c++ bridge as a shared library
-add_library(floatllm_compute SHARED floatllm_compute.cpp)
+set_target_properties(FloatLLM PROPERTIES PREFIX "")
 
-set_target_properties(floatllm_compute PROPERTIES PREFIX "")
+set_target_properties(FloatLLM PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+set_target_properties(FloatLLM PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
-set_target_properties(floatllm_compute PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-set_target_properties(floatllm_compute PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-
-target_include_directories(floatllm_compute PRIVATE
+target_include_directories(FloatLLM PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
-# Base linkages
-target_link_libraries(floatllm_compute PRIVATE ggml ggml-base ggml-cpu)
+target_link_libraries(FloatLLM PUBLIC ggml ggml-base ggml-cpu)
 
-# Hardware override and extensions
 if(APPLE)
-    target_link_libraries(floatllm_compute PRIVATE ggml-metal)
+    target_link_libraries(FloatLLM PUBLIC ggml-metal)
 endif()
 
 if(GGML_CUDA)
-    target_link_libraries(floatllm_compute PRIVATE ggml-cuda)
+    target_link_libraries(FloatLLM PUBLIC ggml-cuda)
 endif()
 
 if(GGML_VULKAN)
-    target_link_libraries(floatllm_compute PRIVATE ggml-vulkan)
+    target_link_libraries(FloatLLM PUBLIC ggml-vulkan)
 endif()
 
 if(GGML_OPENCL)
-    target_link_libraries(floatllm_compute PRIVATE ggml-opencl)
+    target_link_libraries(FloatLLM PUBLIC ggml-opencl)
 endif()
 
 if(GGML_HIP)
-    target_link_libraries(floatllm_compute PRIVATE ggml-hip)
+    target_link_libraries(FloatLLM PUBLIC ggml-hip)
 endif()
 
 if(GGML_SYCL)
-    target_link_libraries(floatllm_compute PRIVATE ggml-sycl)
+    target_link_libraries(FloatLLM PUBLIC ggml-sycl)
 endif()
 
 if(GGML_KOMPUTE)
-    target_link_libraries(floatllm_compute PRIVATE ggml-kompute)
+    target_link_libraries(FloatLLM PUBLIC ggml-kompute)
 endif()
 
-# build a runnable C++ entrypoint from floatllm_compute.cpp
-add_executable(floatllm_run floatllm_compute.cpp)
-target_compile_definitions(floatllm_run PRIVATE FLOATLLM_BUILD_MAIN)
+add_executable(runFloatLLM src/FloatLLM.cpp)
 
-set_target_properties(floatllm_run PROPERTIES
+set_target_properties(runFloatLLM PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
 )
 
-target_include_directories(floatllm_run PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src"
-)
-
-target_link_libraries(floatllm_run PRIVATE ggml ggml-base ggml-cpu)
-
-if(APPLE)
-    target_link_libraries(floatllm_run PRIVATE ggml-metal)
-endif()
-
-if(GGML_CUDA)
-    target_link_libraries(floatllm_run PRIVATE ggml-cuda)
-endif()
-
-if(GGML_VULKAN)
-    target_link_libraries(floatllm_run PRIVATE ggml-vulkan)
-endif()
-
-if(GGML_OPENCL)
-    target_link_libraries(floatllm_run PRIVATE ggml-opencl)
-endif()
-
-if(GGML_HIP)
-    target_link_libraries(floatllm_run PRIVATE ggml-hip)
-endif()
-
-if(GGML_SYCL)
-    target_link_libraries(floatllm_run PRIVATE ggml-sycl)
-endif()
-
-if(GGML_KOMPUTE)
-    target_link_libraries(floatllm_run PRIVATE ggml-kompute)
-endif()
+target_link_libraries(runFloatLLM PRIVATE FloatLLM)

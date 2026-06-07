@@ -9,13 +9,13 @@
 FloatLLM is built for a fundamental shift in local AI execution: **Dynamic Zero-Copy Memory Chunking**. 
 
 ## 🚀 The Architectural Shift
-Originally, handling models larger than host RAM relied on static, layer-by-layer disk swapping. However, static swapping creates massive I/O bottlenecks. 
+Originally, handling models larger than device RAM relied on static, layer-by-layer disk swapping. However, static swapping creates massive I/O bottlenecks. 
 
 FloatLLM abandons static swapping. Instead, it utilizes OS-level hardware interrogation to calculate exact, real-time memory boundaries, slicing standard `.gguf` neural network weights into mathematically perfect execution blocks. By leveraging native `mmap` (memory-mapping), it creates a zero-copy hardware bridge, streaming gigabytes of tensor data from SSD to RAM at bare-metal speeds without ever triggering an Out-of-Memory (OOM) panic.
 
 This allows massive architectures to execute natively on anything from an Apple Silicon Mac to a non-rooted Android device running terminal environments, completely offline.
 
----
+
 
 
 ## The development process
@@ -23,7 +23,7 @@ This allows massive architectures to execute natively on anything from an Apple 
 > This project is being developed right now using AI to convert the initial python completely to the c++ for a faster execution and low python crashes, due to c++ mid-level language benefits for control over memory!
 > I am still supervising the whole AI generated code so I could fix AI errors and have a cleaner flow when this python get's completely removed and c++ actually starts executing everything through a single code!
 
----
+
 
 ## 🛠️ Usage (Building from Source)
 
@@ -83,43 +83,43 @@ brew install cmake
 **For Apple Silicon (Metal/MPS):**
 ```bash
 cmake -B build -DGGML_DIR=/path/to/ggml
-cmake --build build --config Release -j 4 --target run_llm
+cmake --build build --config Release -j 4 --target runFloatLLM
 ```
 **For NVIDIA GPU (CUDA):**
 ```bash
 cmake -B build -DGGML_CUDA=ON -DGGML_DIR=/path/to/ggml
-cmake --build build --config Release -j 4 --target run_llm
+cmake --build build --config Release -j 4 --target runFloatLLM
 ```
 **For Vulkan GPU:**
 ```bash
 cmake -B build -DGGML_VULKAN=ON -DGGML_DIR=/path/to/ggml
-cmake --build build --config Release -j 4 --target run_llm
+cmake --build build --config Release -j 4 --target runFloatLLM
 ```
 **For OpenCL:**
 ```bash
 cmake -B build -DGGML_OPENCL=ON -DGGML_DIR=/path/to/ggml
-cmake --build build --config Release -j 4 --target run_llm
+cmake --build build --config Release -j 4 --target runFloatLLM
 ```
 **For SYCL (Intel OneAPI):**
 ```bash
 cmake -B build -DGGML_SYCL=ON -DGGML_DIR=/path/to/ggml
-cmake --build build --config Release -j 4 --target run_llm
+cmake --build build --config Release -j 4 --target runFloatLLM
 ```
 **For Kompute / DirectX:**
 ```bash
 cmake -B build -DGGML_KOMPUTE=ON -DGGML_DIR=/path/to/ggml
-cmake --build build --config Release -j 4 --target run_llm
+cmake --build build --config Release -j 4 --target runFloatLLM
 ```
 **For CPU-Only / Native ARM:**
 ```bash
 cmake -B build -DGGML_DIR=/path/to/ggml
-cmake --build build --config Release -j 4 --target run_llm
+cmake --build build --config Release -j 4 --target runFloatLLM
 ``` 
 
 ### 5. Run the Engine
 * Execute the router, pointing it to a local .gguf file:
 ```bash
-./run_llm --hardware auto --model-path /path/to/your/model.gguf --prompt "What is the capital of France?"
+./runFloatLLM --hardware auto --model-path /path/to/your/model.gguf --prompt "What is the capital of France?"
 ```
 
 ## 🤖 AI Acknowledgement
