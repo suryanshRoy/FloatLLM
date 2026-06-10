@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <sstream>
 #include <cstdlib>
+#include <cmath>
 #include <fstream>
 #include <stdexcept>
 #include <utility>
@@ -25,6 +26,7 @@
 
 #include "ggml.h"
 #include "ggml-backend.h"
+#include "ggml-cpu.h"
 #include "ggml-alloc.h"
 #include "gguf.h"
 
@@ -46,13 +48,39 @@ using std::string;
 
 namespace floatllm {
 
+// model hyper-parameters pulled from the GGUF metadata
+struct ModelHParams {
+    string arch = "unknown";
+    int32_t n_layer = 0;
+    int32_t n_head = 0;
+    int32_t n_head_kv = 0;
+    int32_t n_embd = 0;
+    int32_t n_ff = 0;
+    int32_t n_rot = 0;          // rope dimension count
+    int32_t n_ctx_train = 0;    // max context the model was trained on
+    int32_t n_ctx = 0;          // runtime context window (kv cache slots)
+    float f_norm_rms_eps = 1e-5f;
+    float rope_freq_base = 10000.0f;
+
+    int32_t head_dim() const { return n_head > 0 ? n_embd / n_head : 0; }
+    int32_t n_embd_kv() const { return head_dim() * n_head_kv; }
+    bool valid() const { return n_layer > 0 && n_head > 0 && n_embd > 0; }
+};
+
 class ComputeEngine {
 public:
     ComputeEngine() = default;
     ~ComputeEngine();
 
     // fire up the backend and alllocate graph memory
-    void init(const string& backend_name, int total_tensors);
+    void init(const string& backend_name, int total_tensors, double slack_buffer_mb = 64.0);
+
+    // give the engine the model architecture info (layers, heads, rope, ...)
+    void set_hparams(const ModelHParams& hp);
+
+    // move weights into backend memory once (GPU) or keep zero-copy mmap (CPU),
+    // then allocate the persistent KV cache
+    bool finalize_weights();
 
     // cleanup everything - vram, ram, the whole thing
     void shutdown();
@@ -62,7 +90,8 @@ public:
                     int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3, int chunk_id);
 
     // run forward pass - returns the next token id
-    int32_t forward_pass(int32_t* tokens, int num_tokens);
+    // n_past = number of tokens already stored in the kv cache
+    int32_t forward_pass(const int32_t* tokens, int num_tokens, int n_past = 0);
 
     //  static utilities (dont need an engine instance) 
 
@@ -88,10 +117,27 @@ private:
     // resolves user-freindly backend names to ggml ones
     static string resolve_backend(const string& input_name);
 
+    struct ggml_tensor* get_weight(const string& name) const;
+    struct ggml_tensor* build_transformer_graph(struct ggml_context* graph_ctx, struct ggml_cgraph* gf,
+                                                struct ggml_tensor* inp_tokens, struct ggml_tensor* inp_pos,
+                                                struct ggml_tensor* kq_mask, int num_tokens, int n_past);
+
     struct ggml_context* ctx = nullptr;
     ggml_backend_t backend = nullptr;
     ggml_gallocr_t allocr = nullptr;
     std::unordered_map<string, struct ggml_tensor*> tensor_registry;
+    std::unordered_map<string, void*> raw_data_registry; // mmap pointers for deferred GPU upload
+
+    ModelHParams hparams;
+    bool backend_is_cpu = true;
+    bool weights_finalized = false;
+    ggml_backend_buffer_t weight_buffer = nullptr;
+
+    // persistent KV cache (one K and one V tensor per layer)
+    struct ggml_context* kv_ctx = nullptr;
+    ggml_backend_buffer_t kv_buffer = nullptr;
+    std::vector<struct ggml_tensor*> k_cache;
+    std::vector<struct ggml_tensor*> v_cache;
 };
 
 
@@ -138,6 +184,9 @@ struct CliOptions {
     string model_path;
     string prompt;
     string session_id = "default_chat";
+    int max_tokens = 60;
+    int context_length = 4096;
+    double slack_buffer_mb = 64.0;
     double crash_threshold_mb = 200.0;
     double override_storage_gb = -1.0;
     double ram_limit_gb = -1.0;
@@ -155,6 +204,7 @@ public:
     ~Loader();
 
     std::vector<TensorInfo> parse_gguf_metadata() const;
+    ModelHParams parse_hparams() const;
     void set_allowed_ram_mb(double mb);
     void build_dynamic_chunks(const std::vector<TensorInfo>& tensors);
     void stream_all_chunks() const;

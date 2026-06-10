@@ -37,36 +37,53 @@ int main(int argc, char** argv) {
 
         // parse model, init engine, load tensors
         const auto tensor_map = loader.parse_gguf_metadata();
-        engine.init(selected_backend, static_cast<int>(tensor_map.size()));
+        engine.init(selected_backend, static_cast<int>(tensor_map.size()), opts.slack_buffer_mb);
+
+        floatllm::ModelHParams hparams = loader.parse_hparams();
+        hparams.n_ctx = std::min(opts.context_length, hparams.n_ctx_train > 0 ? hparams.n_ctx_train : opts.context_length);
+        engine.set_hparams(hparams);
+
         loader.set_allowed_ram_mb(calculated_limit);
         loader.build_dynamic_chunks(tensor_map);
         loader.stream_all_chunks();
+
+        // one-time weight upload (GPU) / zero-copy bind (CPU) + KV cache allocation
+        if (!engine.finalize_weights()) {
+            throw std::runtime_error("failed to finalize weights / allocate KV cache");
+        }
 
         cout << "[FloatLLM] Engine successfully mapped. Handing to AI...\n";
         cout << "[FloatLLM] --------------------------------------------------------------------------------\n";
         cout << "[FloatLLM] \nUser: " << opts.prompt << "\n";
         cout << "[FloatLLM] ";
 
-        // tokenize and start generating
+        // tokenize and start generating (user-tunable via --max-tokens)
         std::vector<int32_t> token_ids = tokenizer.encode(opts.prompt);
-        // REVIEW: CURRENTLY AT 60 TOKENS ONLY!
-        const int max_tokens_to_generate = 60;
+        const int max_tokens_to_generate = opts.max_tokens;
 
+        // prefill: run the whole prompt through once, filling the KV cache
+        int n_past = 0;
+        int32_t next_token_id = engine.forward_pass(token_ids.data(), static_cast<int>(token_ids.size()), n_past);
+        n_past += static_cast<int>(token_ids.size());
+
+        int generated = 0;
         for (int step = 0; step < max_tokens_to_generate; ++step) {
-            std::vector<int32_t> working_tokens = token_ids;
-            int32_t next_token_id = engine.forward_pass(working_tokens.data(), static_cast<int>(working_tokens.size()));
-            if (next_token_id == tokenizer.eos_id()) {
+            if (next_token_id < 0 || next_token_id == tokenizer.eos_id()) {
                 break;
             }
 
             string word = tokenizer.decode({next_token_id});
             cout << "\033[92m" << word << "\033[0m ";
             cout.flush();
-            token_ids.push_back(next_token_id);
+            ++generated;
+
+            // decode: feed only the newest token, the KV cache remembers the rest
+            next_token_id = engine.forward_pass(&next_token_id, 1, n_past);
+            ++n_past;
         }
 
         cout << "\n\n";
-        cout << GREEN("[FloatLLM] Generated first 60 tokens in output!") << "\n";
+        cout << GREEN("[FloatLLM] Generated ") << generated << GREEN(" tokens in output!") << "\n";
         cout << "[FloatLLM] --------------------------------------------------------------------------------\n";
         engine.shutdown();
         cout << "[FloatLLM] Closing C++ memory maps...\n";

@@ -11,6 +11,9 @@ void print_usage(const char* exe) {
               << "  --crash-threshold MB       RAM safety threshold (default 200)\n"
               << "  --override-storage GB      Manually override storage free-space check\n"
               << "  --session-id NAME          Session label for the dashboard\n"
+              << "  --max-tokens N             Max tokens to generate (default 60)\n"
+              << "  --context-length N         KV cache context window (default 4096)\n"
+              << "  --slack-buffer-mb MB       Graph context slack buffer (default 64)\n"
               << "  --temp-chat                Mark session as temporary\n"
               << "  --ram-limit GB             Hard RAM chunk cap in GB\n"
               << "  --ram-buffer FRACTION      RAM reserve fraction (default 0.20)\n");
@@ -41,6 +44,12 @@ bool parse_args(int argc, char** argv, CliOptions& opts) {
             opts.override_storage_gb = std::stod(need_value("--override-storage"));
         } else if (arg == "--session-id") {
             opts.session_id = need_value("--session-id");
+        } else if (arg == "--max-tokens") {
+            opts.max_tokens = std::stoi(need_value("--max-tokens"));
+        } else if (arg == "--context-length") {
+            opts.context_length = std::stoi(need_value("--context-length"));
+        } else if (arg == "--slack-buffer-mb") {
+            opts.slack_buffer_mb = std::stod(need_value("--slack-buffer-mb"));
         } else if (arg == "--temp-chat") {
             opts.temp_chat = true;
         } else if (arg == "--ram-limit") {
@@ -153,6 +162,45 @@ std::vector<TensorInfo> Loader::parse_gguf_metadata() const {
 
     cout << "[FloatLLM] Discovered " << tensors.size() << " individual tensors in the model architecture.\n";
     return tensors;
+}
+
+// pulls the transformer architecture config out of the GGUF metadata
+ModelHParams Loader::parse_hparams() const {
+    ModelHParams hp;
+
+    const int64_t arch_key = gguf_find_key(gguf_ctx, "general.architecture");
+    if (arch_key < 0) {
+        cout << YELLOW("[FloatLLM] general.architecture missing from GGUF. Transformer layers disabled.") << "\n";
+        return hp;
+    }
+    hp.arch = gguf_get_val_str(gguf_ctx, arch_key);
+
+    auto read_u32 = [&](const string& suffix, int32_t fallback) -> int32_t {
+        const int64_t key = gguf_find_key(gguf_ctx, (hp.arch + suffix).c_str());
+        if (key < 0) return fallback;
+        return static_cast<int32_t>(gguf_get_val_u32(gguf_ctx, key));
+    };
+    auto read_f32 = [&](const string& suffix, float fallback) -> float {
+        const int64_t key = gguf_find_key(gguf_ctx, (hp.arch + suffix).c_str());
+        if (key < 0) return fallback;
+        return gguf_get_val_f32(gguf_ctx, key);
+    };
+
+    hp.n_layer = read_u32(".block_count", 0);
+    hp.n_head = read_u32(".attention.head_count", 0);
+    hp.n_head_kv = read_u32(".attention.head_count_kv", hp.n_head);
+    hp.n_embd = read_u32(".embedding_length", 0);
+    hp.n_ff = read_u32(".feed_forward_length", 0);
+    hp.n_ctx_train = read_u32(".context_length", 4096);
+    hp.n_rot = read_u32(".rope.dimension_count", hp.head_dim());
+    hp.f_norm_rms_eps = read_f32(".attention.layer_norm_rms_epsilon", 1e-5f);
+    hp.rope_freq_base = read_f32(".rope.freq_base", 10000.0f);
+
+    cout << "[FloatLLM] Architecture [" << hp.arch << "]: " << hp.n_layer << " layers, "
+         << hp.n_head << " heads (" << hp.n_head_kv << " kv), embd " << hp.n_embd
+         << ", ff " << hp.n_ff << ", rope base " << hp.rope_freq_base << "\n";
+
+    return hp;
 }
 
 void Loader::set_allowed_ram_mb(double mb) {
