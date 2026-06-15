@@ -19,6 +19,7 @@ set(FLOATLLM_CORE
     src/FloatEngine.cpp
     src/FloatTokenizer.cpp
     src/FloatLoader.cpp
+    src/FloatUI.cpp
 )
 
 # shared library

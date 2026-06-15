@@ -27,6 +27,7 @@
 #include "ggml-backend.h"
 #include "ggml-alloc.h"
 #include "gguf.h"
+#include "FloatUI.h"
 
 #ifdef __APPLE__
 #include <mach/mach.h>
@@ -66,23 +67,8 @@ public:
 
     //  static utilities (dont need an engine instance) 
 
-    // pre-flight saftey check - will exit() if things are bad
-    static double check_threshold(double current_ram_mb, double crash_threshold_mb, double model_size_mb,
-                                  double total_storage_gb, double free_storage_gb, double used_ram_mb,
-                                  double total_ram_mb, double override_storage_gb, const char* session_id,
-                                  int temp_chat, double ram_limit_gb, double ram_buffer);
-
     // auto detect best GPU/CPU backend for the current OS
     static string detect_hardware();
-
-    // get system ram stats {total_mb, free_mb}
-    static std::pair<double, double> get_ram_stats_mb();
-
-    // get disk space {total_gb, free_gb}
-    static std::pair<double, double> get_storage_stats_gb();
-
-    // simple file size helper
-    static size_t file_size_bytes(const string& path);
 
 private:
     // resolves user-freindly backend names to ggml ones

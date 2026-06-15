@@ -66,8 +66,7 @@ void ComputeEngine::init(const string& backend_name, int total_tensors) {
 
     cout << PURPLE("Allocating: " << (dynamic_mem_size / 1024.0 / 1024.0) << "MB for tensors") << endl;
 
-    // Initialize GGML & allocate RAM for "Compute Graph"
-    // REVIEW CHECK IF THE SYSTEM IS EVEN USING UP THE ACTUAL ZERO COPY OR NOT!
+    // Initialize GGML & allocate RAM for "Compute Graph" 
     struct ggml_init_params params = {
         /* .mem_size    = */ dynamic_mem_size,
         /* .mem_buffer  = */ NULL,
@@ -239,100 +238,11 @@ int32_t ComputeEngine::forward_pass(int32_t* tokens, int num_tokens) {
     return best_token;
 }
 
-//  static: pre-flight safety checks 
-
-double ComputeEngine::check_threshold(double current_ram_mb, double crash_threshold_mb, double model_size_mb,
-                                      double total_storage_gb, double free_storage_gb, double used_ram_mb,
-                                      double total_ram_mb, double override_storage_gb, const char* session_id,
-                                      int temp_chat, double ram_limit_gb, double ram_buffer) {
-    
-    // ATTENTION!
-    auto fmt2 = [](double value) { // format double to string with 2 decimal places
-        std::ostringstream oss;
-        oss << std::fixed << std::setprecision(2) << value;
-        return oss.str();
-    };
-
-    const string session = session_id ? session_id : "default";
-    const double model_size_gb = model_size_mb / 1024.0;
-    double trusted_free_gb = free_storage_gb;
-
-    if (override_storage_gb >= 0.0) {
-        trusted_free_gb = override_storage_gb;
-        cout << "\n Overriding UNIX limits. Trusting the input value of "
-                  << fmt2(trusted_free_gb) << " GB.\n";
-        if (total_storage_gb > 0.0 && trusted_free_gb > total_storage_gb) {
-            cerr << RED("ERROR: Override (" << trusted_free_gb
-                      << " GB) exceeds total disk size (" << fmt2(total_storage_gb)
-                      << " GB). Aborting the process.\n");
-            std::exit(1);
-        }
-    }
-    else {
-#ifdef __APPLE__
-        if (free_storage_gb > 0.0 && model_size_gb > free_storage_gb) {
-            cout << YELLOW("\n⚠️ UNIX sees " << fmt2(free_storage_gb)
-                      << " GB. Model needs " << fmt2(model_size_gb) << " GB.\n");
-            cout << YELLOW("macOS hides Purgeable space. If you have enough space in System Settings, run with: [--override-storage YOUR_GB]\n");
-        }
-#endif
-    }
-
-    if (trusted_free_gb > 0.0 && model_size_gb > trusted_free_gb) {
-        cerr << RED("\n--------------------------------------------------------------------------------\n");
-        cerr << RED("ERROR: Model requires " << fmt2(model_size_gb)
-                  << "GB, but only " << fmt2(trusted_free_gb) << " GB is free.\n");
-        cerr << RED("Halting to prevent storage corruption.\n");
-        cerr << RED("--------------------------------------------------------------------------------\n\n");
-        std::exit(1);
-    }
-
-    if (current_ram_mb <= crash_threshold_mb) {
-        cerr << RED("\n--------------------------------------------------------------------------------\n");
-        cerr << RED("OOM Failsafe triggered to stop crashing/freezing of device.\n");
-        cerr << RED("ERROR: Free RAM (" << fmt2(current_ram_mb)
-                  << "MB) hit the crash threshold (" << fmt2(crash_threshold_mb) << " MB).\n");
-        cerr << RED("Target Model Size: " << fmt2(model_size_mb) << " MB\n");
-        if (used_ram_mb >= 0.0) {
-            cerr << PURPLE("FloatLLM Consumed: " << fmt2(used_ram_mb) << " MB (Max Peak)\n");
-        }
-        cerr << PURPLE("Halting execution gracefully.\n");
-        cerr << PURPLE("Adjust [--crash-threshold] or increase [--ram-limit] for more headroom.\n");
-        cerr << PURPLE("--------------------------------------------------------------------------------\n\n");
-        std::exit(1);
-    }
-
-    const double safe_ram_mb = std::max(1.0, (current_ram_mb * (1.0 - ram_buffer)) - crash_threshold_mb);
-    const double allowed_ram_mb = (ram_limit_gb > 0.0)
-        ? std::min(safe_ram_mb, ram_limit_gb * 1024.0)
-        : safe_ram_mb;
-
-    // print the dashboard so user knows whats going on
-    cout << PURPLE("\n--- Pre-Flight Memory Dashboard ---\n");
-    if (total_ram_mb > 0.0) {
-        cout << PURPLE("Total Ram       : " << fmt2(total_ram_mb) << "MB\n");
-        cout << PURPLE("Used RAM        : " << fmt2(total_ram_mb - current_ram_mb) << "MB\n");
-    }
-    cout << PURPLE("Free Ram        : " << fmt2(current_ram_mb) << "MB\n");
-    cout << PURPLE("Allowed RAM (Chunk)  : " << fmt2(allowed_ram_mb) << "MB (Buffer: " << (ram_buffer * 100.0) << "%)\n");
-    if (trusted_free_gb > 0.0) {
-        cout << PURPLE("Free Storage    : " << fmt2(trusted_free_gb) << "GB " << (override_storage_gb >= 0.0 ? "(OVERRIDEN)" : "") << "\n");
-    }
-    cout << PURPLE("Target Model Size    : " << fmt2(model_size_mb) << "MB\n");
-    cout << PURPLE("Kill threshold       : " << fmt2(crash_threshold_mb) << "MB\n");
-    cout << PURPLE("--- Session Info \n");
-    cout << PURPLE("Session ID           : [" << session << "]\n");
-    cout << PURPLE("Context Saving       : " << (temp_chat ? "Temporary (Delete on Exit)" : "PERSISTENT (Saved to SSD)") << "\n\n");
-
-    return allowed_ram_mb;
-}
-
-//  static: system info utilities 
-
 string ComputeEngine::detect_hardware() {
 #if defined(__APPLE__)
     return "mps";
-#elif defined(__ANDROID__)     if (access("/system/lib64/libvulkan.so", F_OK) == 0 || access("/system/lib/libvulkan.so", F_OK) == 0) {
+#elif defined(__ANDROID__)
+    if (access("/system/lib64/libvulkan.so", F_OK) == 0 || access("/system/lib/libvulkan.so", F_OK) == 0) {
         return "vulkan_kompute";
     }
     return "native_arm";
@@ -348,70 +258,6 @@ string ComputeEngine::detect_hardware() {
 #else
     return "cpu";
 #endif
-}
-
-std::pair<double, double> ComputeEngine::get_ram_stats_mb() {
-#ifdef _WIN32
-    MEMORYSTATUSEX statex;
-    statex.dwLength = sizeof(statex);
-    if (GlobalMemoryStatusEx(&statex)) {
-        double total_mb = static_cast<double>(statex.ullTotalPhys) / (1024.0 * 1024.0);
-        double free_mb = static_cast<double>(statex.ullAvailPhys) / (1024.0 * 1024.0);
-        return {total_mb, free_mb};
-    }
-    return {0.0, 0.0};
-#elif defined(__APPLE__)
-    vm_statistics64_data_t vm_stat;
-    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
-    if (host_statistics64(mach_host_self(), HOST_VM_INFO64, reinterpret_cast<host_info64_t>(&vm_stat), &count) == KERN_SUCCESS) {
-        const double page_size = static_cast<double>(sysconf(_SC_PAGESIZE));
-        const double total = static_cast<double>(sysconf(_SC_PHYS_PAGES)) * page_size / (1024.0 * 1024.0);
-        const double free = static_cast<double>(vm_stat.free_count + vm_stat.inactive_count) * page_size / (1024.0 * 1024.0);
-        return {total, free};
-    }
-#endif
-    // fallback for other linux distros
-    const long page_size = sysconf(_SC_PAGESIZE);
-    const long phys_pages = sysconf(_SC_PHYS_PAGES);
-    const double total = (page_size > 0 && phys_pages > 0)
-        ? (static_cast<double>(page_size) * static_cast<double>(phys_pages)) / (1024.0 * 1024.0)
-        : 0.0;
-    const double free = total * 0.5; // rough estimate when we cant get exact numbers
-    return {total, free};
-}
-
-std::pair<double, double> ComputeEngine::get_storage_stats_gb() {
-#ifdef _WIN32
-    ULARGE_INTEGER freeBytesAvailable, totalNumberOfBytes, totalNumberOfFreeBytes;
-    if (GetDiskFreeSpaceExA(".", &freeBytesAvailable, &totalNumberOfBytes, &totalNumberOfFreeBytes)) {
-        double total_gb = static_cast<double>(totalNumberOfBytes.QuadPart) / (1024.0 * 1024.0 * 1024.0);
-        double free_gb = static_cast<double>(freeBytesAvailable.QuadPart) / (1024.0 * 1024.0 * 1024.0);
-        return {total_gb, free_gb};
-    }
-    return {0.0, 0.0};
-#else
-    const char* home = std::getenv("HOME");
-    const char* root = home ? home : ".";
-    struct statvfs fs {};
-    if (statvfs(root, &fs) != 0) {
-        return {0.0, 0.0};
-    }
-
-    const double total_bytes = static_cast<double>(fs.f_blocks) * static_cast<double>(fs.f_frsize);
-    const double free_bytes = static_cast<double>(fs.f_bavail) * static_cast<double>(fs.f_frsize);
-    return {
-        total_bytes / (1024.0 * 1024.0 * 1024.0),
-        free_bytes / (1024.0 * 1024.0 * 1024.0)
-    };
-#endif
-}
-
-size_t ComputeEngine::file_size_bytes(const string& path) {
-    struct stat st {};
-    if (stat(path.c_str(), &st) != 0) {
-        throw std::runtime_error("failed to stat model file: " + path);
-    }
-    return static_cast<size_t>(st.st_size);
 }
 
 } // namespace floatllm

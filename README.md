@@ -20,8 +20,22 @@ This allows massive architectures to execute natively on anything from an Apple 
 
 ## The development process
 > [!NOTE]
-> This project is being developed right now using AI to convert the initial python completely to the c++ for a faster execution and low python crashes, due to c++ mid-level language benefits for control over memory!
-> I am still supervising the whole AI generated code so I could fix AI errors and have a cleaner flow when this python get's completely removed and c++ actually starts executing everything through a single code!
+>
+> I am currently working on it and maybe it will get better over time so thanks for your patience and support!
+> Currently these things are done:
+> 
+- [x] Engine & Memory Management:
+  - Implemented `ComputeEngine::init()`: Discovered hardware, loaded all backends, allocated dynamic memory, and initialized the GGML context with Zero-Copy (`no_alloc = true`).
+  - Implemented `ComputeEngine::map_tensor()`: Mapped raw memory pointers to GGML tensors and stored them in a registry.
+- [ ] Inference Logic(Working on):
+  - Implemented `ComputeEngine::forward_pass()`: Created a new computation graph, copied prompt tokens, and implemented a robust tensor lookup system (exact name match -> fallback scan).
+- [ ] Utilities & Safety:
+  - Implemented `Utils::quantize_memory()`: A helper function to convert F32 to F16 for memory optimization.
+  - Implemented `ComputeEngine::check_system_status()`: A diagnostic function to check VRAM and RAM.
+  - Implemented an auto safety check that will stop code execution the time when system ram usage exceeds the limit of 95% to ensure no OOM (Out of Memory) error.
+
+
+
 
 
 

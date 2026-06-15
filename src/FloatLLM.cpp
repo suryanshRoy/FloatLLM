@@ -18,12 +18,12 @@ int main(int argc, char** argv) {
         cout << PURPLE("[FloatLLM] Hardware Router engaged: Backend -> [" << selected_backend << "]\n");
 
         // grab system stats for the safety checks
-        const auto [total_ram_mb, free_ram_mb] = floatllm::ComputeEngine::get_ram_stats_mb();
-        const auto [total_storage_gb, free_storage_gb] = floatllm::ComputeEngine::get_storage_stats_gb();
-        const double model_size_mb = static_cast<double>(floatllm::ComputeEngine::file_size_bytes(opts.model_path)) / (1024.0 * 1024.0);
+        const auto [total_ram_mb, free_ram_mb] = floatllm::TerminalUI::get_ram_stats_mb();
+        const auto [total_storage_gb, free_storage_gb] = floatllm::TerminalUI::get_storage_stats_gb();
+        const double model_size_mb = static_cast<double>(floatllm::TerminalUI::file_size_bytes(opts.model_path)) / (1024.0 * 1024.0);
 
         // pre-flight safety checks
-        const double calculated_limit = floatllm::ComputeEngine::check_threshold(
+        const double calculated_limit = floatllm::TerminalUI::check_threshold(
             free_ram_mb, opts.crash_threshold_mb, model_size_mb, total_storage_gb,
             free_storage_gb, -1.0, total_ram_mb, opts.override_storage_gb,
             opts.session_id.c_str(), opts.temp_chat ? 1 : 0, opts.ram_limit_gb, opts.ram_buffer);
@@ -53,6 +53,9 @@ int main(int argc, char** argv) {
         const int max_tokens_to_generate = 60;
 
         for (int step = 0; step < max_tokens_to_generate; ++step) {
+            // Safety Guardian: Check for system-wide RAM overload before every single compute step
+            floatllm::TerminalUI::abort_if_overloaded();
+
             std::vector<int32_t> working_tokens = token_ids;
             int32_t next_token_id = engine.forward_pass(working_tokens.data(), static_cast<int>(working_tokens.size()));
             if (next_token_id == tokenizer.eos_id()) {
