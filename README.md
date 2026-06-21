@@ -4,9 +4,12 @@
   <img src="assets/logo.png" alt="FloatLLM Logo" width="100%">
 </div>
 
-**A bare-metal, hardware-agnostic Large Language Model (LLM) inference engine designed to run massive models on heavily memory-constrained edge devices, and to act as a safety feature for running LLMs locally.**
+**A bare-metal, Large Language Model (LLM) inference engine designed to run massive models on heavily memory-constrained edge devices, and to act as a safety feature for running LLMs locally.**
 
-FloatLLM is built for a fundamental shift in local AI execution: **Dynamic Zero-Copy Memory Chunking**. 
+FloatLLM is built to tackle the issue of AI execution locally! With rise of LLMs, privacy and security concerns became more prominent. FloatLLM solves this by enabling users to run LLMs directly on their devices, eliminating the need for cloud-based processing and api calls. This not only enhances privacy but also allows for offline access and reduced latency. 
+
+> [!NOTE]
+> Please note that FloatLLM is only a inference engine that tries its best to run LLMs on memory-constrained devices, but it does not contain any magic and it performs the best when the model are re-developed by another project called LLMs-Optimizer that will be released soon. So if you want to run LLMs on your local device, make sure to check out LLMs-Optimizer as well for the best experience!
 
 ## 🚀 The Architectural Shift
 Originally, handling models larger than device RAM relied on static, layer-by-layer disk swapping. However, static swapping creates massive I/O bottlenecks. 
@@ -20,14 +23,11 @@ This allows massive architectures to execute natively on anything from an Apple 
 
 ## The development process
 > [!NOTE]
->
-> I am currently working on it and maybe it will get better over time so thanks for your patience and support!
-> Currently these things are done:
-> 
+> Please note that FloatLLM is currently in early development, so keep an eye on the repo for updates! 
 - [x] Engine & Memory Management:
   - Implemented `ComputeEngine::init()`: Discovered hardware, loaded all backends, allocated dynamic memory, and initialized the GGML context with Zero-Copy (`no_alloc = true`).
   - Implemented `ComputeEngine::map_tensor()`: Mapped raw memory pointers to GGML tensors and stored them in a registry.
-- [ ] Inference Logic(Working on):
+- [ ] Inference Logic (Working on):
   - Implemented `ComputeEngine::forward_pass()`: Created a new computation graph, copied prompt tokens, and implemented a robust tensor lookup system (exact name match -> fallback scan).
 - [ ] Utilities & Safety:
   - Implemented `Utils::quantize_memory()`: A helper function to convert F32 to F16 for memory optimization.
@@ -41,12 +41,11 @@ This allows massive architectures to execute natively on anything from an Apple 
 
 ## 🛠️ Usage (Building from Source)
 
-### 1. Envirnoment & Requirements
+### 1. Environment & Requirements
 Clone this repository and install the minimal required Python libraries:
 ```bash
 git clone https://github.com/suryanshRoy/FloatLLM.git
 cd FloatLLM
-pip install -r requirements.txt
 ```
 
 ### 2. Fetch the GGML Library
@@ -135,6 +134,3 @@ cmake --build build --config Release -j 4 --target runFloatLLM
 ```bash
 ./runFloatLLM --hardware auto --model-path /path/to/your/model.gguf --prompt "What is the capital of France?"
 ```
-
-## 🤖 AI Acknowledgement
-FloatLLM was made by human(Me), but AI tools were actively used for researching and debugging assitant. I acted as the systems architect, directing every logic, memory management, and new structural shifts. 
