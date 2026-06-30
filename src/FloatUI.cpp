@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <stdexcept>
+#include <fstream>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -99,15 +100,15 @@ double TerminalUI::check_threshold(double current_ram_mb, double crash_threshold
     }
     cout << PURPLE("Target Model Size    : " << fmt2(model_size_mb) << "MB\n");
     cout << PURPLE("Kill threshold       : " << fmt2(crash_threshold_mb) << "MB\n");
-    cout << PURPLE("--- Session Info \n");
+    cout << PURPLE("--- User Execution Blueprint ---\n");
     cout << PURPLE("Session ID           : [" << session << "]\n");
     cout << PURPLE("Context Saving       : " << (temp_chat ? "Temporary (Delete on Exit)" : "PERSISTENT (Saved to SSD)") << "\n\n");
 
     return allowed_ram_mb;
 }
 
-void TerminalUI::abort_if_overloaded() {
-    auto stats = get_ram_stats_mb();
+void TerminalUI::abort_if_overloaded(double override_ram_mb) {
+    auto stats = get_ram_stats_mb(override_ram_mb);
     double total_ram = stats.first;
     double free_ram = stats.second;
 
@@ -127,7 +128,7 @@ void TerminalUI::abort_if_overloaded() {
     }
 }
 
-std::pair<double, double> TerminalUI::get_ram_stats_mb() {
+std::pair<double, double> TerminalUI::get_ram_stats_mb(double override_ram_mb) {
 #ifdef _WIN32
     MEMORYSTATUSEX statex;
     statex.dwLength = sizeof(statex);
@@ -137,6 +138,7 @@ std::pair<double, double> TerminalUI::get_ram_stats_mb() {
         return {total_mb, free_mb};
     }
     return {0.0, 0.0};
+
 #elif defined(__APPLE__)
     vm_statistics64_data_t vm_stat;
     mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
@@ -146,15 +148,50 @@ std::pair<double, double> TerminalUI::get_ram_stats_mb() {
         const double free = static_cast<double>(vm_stat.free_count + vm_stat.inactive_count) * page_size / (1024.0 * 1024.0);
         return {total, free};
     }
-#endif
-    // fallback for other linux distros
+    return {0.0, 0.0};
+
+#elif defined(__linux__) || ((defined(__unix__)) && !defined(__APPLE__))
+    std::ifstream meminfo("/proc/meminfo");
+    if (meminfo.is_open()) {
+        std::string line;
+        long long memTotalKB = 0, memAvailableKB = 0;
+        while (std::getline(meminfo, line)) {
+            std::istringstream iss(line);
+            std::string key;
+            long long value;
+            std::string unit;
+            if (iss >> key >> value >> unit) {
+                if (key == "MemTotal:") {
+                    memTotalKB = value;
+                }
+                else if (key == "MemAvailable:") {
+                    memAvailableKB = value;
+                }
+            }
+            if (memTotalKB > 0 && memAvailableKB > 0) break;
+        }
+        if (memTotalKB > 0 && memAvailableKB > 0) {
+            double total_mb = static_cast<double>(memTotalKB) / 1024.0;
+            double free_mb = static_cast<double>(memAvailableKB) / 1024.0;
+            return {total_mb, free_mb};
+        }
+    }
+
     const long page_size = sysconf(_SC_PAGESIZE);
     const long phys_pages = sysconf(_SC_PHYS_PAGES);
-    const double total = (page_size > 0 && phys_pages > 0)
-        ? (static_cast<double>(page_size) * static_cast<double>(phys_pages)) / (1024.0 * 1024.0)
-        : 0.0;
-    const double free = total * 0.5; // rough estimate when we cant get exact numbers
+    const double total = (page_size > 0 && phys_pages > 0) ? (static_cast<double>(page_size) * static_cast<double>(phys_pages)) / (1024.0 * 1024.0) : 0.0;
+
+    if (override_ram_mb >= 0.0) {
+        return {total, override_ram_mb};
+    }
+
+    const double free = total * 0.5; // rough estimate when we cant get
     return {total, free};
+
+#else
+    return {0.0, 0.0};
+
+#endif
 }
 
 std::pair<double, double> TerminalUI::get_storage_stats_gb() {

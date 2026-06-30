@@ -10,6 +10,7 @@ void print_usage(const char* exe) {
               << "  --hardware BACKEND         cpu, auto, mps, cuda, vulkan, opencl, sycl\n"
               << "  --crash-threshold MB       RAM safety threshold (default 200)\n"
               << "  --override-storage GB      Manually override storage free-space check\n"
+              << "  --override-ram-mb MB          Manually override RAM free-space check\n"
               << "  --session-id NAME          Session label for the dashboard\n"
               << "  --temp-chat                Mark session as temporary\n"
               << "  --ram-limit GB             Hard RAM chunk cap in GB\n"
@@ -39,6 +40,8 @@ bool parse_args(int argc, char** argv, CliOptions& opts) {
             opts.crash_threshold_mb = std::stod(need_value("--crash-threshold"));
         } else if (arg == "--override-storage") {
             opts.override_storage_gb = std::stod(need_value("--override-storage"));
+        } else if (arg == "--override-ram-mb") {
+            opts.override_ram_mb = std::stod(need_value("--override-ram-mb"));
         } else if (arg == "--session-id") {
             opts.session_id = need_value("--session-id");
         } else if (arg == "--temp-chat") {

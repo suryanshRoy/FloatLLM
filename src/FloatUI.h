@@ -14,10 +14,10 @@ public:
                                   int temp_chat, double ram_limit_gb, double ram_buffer);
 
     // monitors system RAM and kills process if usage > 95%
-    static void abort_if_overloaded();
+    static void abort_if_overloaded(double override_ram_mb = -1.0);
 
     // get system ram stats
-    static std::pair<double, double> get_ram_stats_mb();
+    static std::pair<double, double> get_ram_stats_mb(double override_ram_mb = -1.0);
 
     // get disk space
     static std::pair<double, double> get_storage_stats_gb();

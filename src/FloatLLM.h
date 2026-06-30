@@ -126,6 +126,7 @@ struct CliOptions {
     string session_id = "default_chat";
     double crash_threshold_mb = 200.0;
     double override_storage_gb = -1.0;
+    double override_ram_mb = -1.0;
     double ram_limit_gb = -1.0;
     double ram_buffer = 0.20;
     bool temp_chat = false;

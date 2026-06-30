@@ -18,7 +18,7 @@ int main(int argc, char** argv) {
         cout << PURPLE("[FloatLLM] Hardware Router engaged: Backend -> [" << selected_backend << "]\n");
 
         // grab system stats for the safety checks
-        const auto [total_ram_mb, free_ram_mb] = floatllm::TerminalUI::get_ram_stats_mb();
+        const auto [total_ram_mb, free_ram_mb] = floatllm::TerminalUI::get_ram_stats_mb(opts.override_ram_mb);
         const auto [total_storage_gb, free_storage_gb] = floatllm::TerminalUI::get_storage_stats_gb();
         const double model_size_mb = static_cast<double>(floatllm::TerminalUI::file_size_bytes(opts.model_path)) / (1024.0 * 1024.0);
 
@@ -49,12 +49,11 @@ int main(int argc, char** argv) {
 
         // tokenize and start generating
         std::vector<int32_t> token_ids = tokenizer.encode(opts.prompt);
-        // REVIEW: CURRENTLY AT 60 TOKENS ONLY!
-        const int max_tokens_to_generate = 60;
+        const int max_tokens_to_generate = 512; // FIXME: make this adjustable in the future according to model size and user preference
 
         for (int step = 0; step < max_tokens_to_generate; ++step) {
             // Safety Guardian: Check for system-wide RAM overload before every single compute step
-            floatllm::TerminalUI::abort_if_overloaded();
+            floatllm::TerminalUI::abort_if_overloaded(opts.override_ram_mb);
 
             std::vector<int32_t> working_tokens = token_ids;
             int32_t next_token_id = engine.forward_pass(working_tokens.data(), static_cast<int>(working_tokens.size()));
@@ -69,7 +68,7 @@ int main(int argc, char** argv) {
         }
 
         cout << "\n\n";
-        cout << GREEN("[FloatLLM] Generated first 60 tokens in output!") << "\n";
+        cout << GREEN("[FloatLLM] Generated first " << max_tokens_to_generate << " tokens in output!") << "\n";
         cout << "[FloatLLM] --------------------------------------------------------------------------------\n";
         engine.shutdown();
         cout << "[FloatLLM] Closing C++ memory maps...\n";
