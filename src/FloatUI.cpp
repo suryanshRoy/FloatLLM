@@ -24,7 +24,7 @@ namespace floatllm {
 double TerminalUI::check_threshold(double current_ram_mb, double crash_threshold_mb, double model_size_mb,
                                       double total_storage_gb, double free_storage_gb, double used_ram_mb,
                                       double total_ram_mb, double override_storage_gb, const char* session_id,
-                                      int temp_chat, double ram_limit_gb, double ram_buffer) {
+                                      int temp_chat, double ram_limit_gb, double ram_buffer, bool quantize_memory) {
     
     // ATTENTION!
     auto fmt2 = [](double value) { // format double to string with 2 decimal places
@@ -102,12 +102,13 @@ double TerminalUI::check_threshold(double current_ram_mb, double crash_threshold
     cout << PURPLE("Kill threshold       : " << fmt2(crash_threshold_mb) << "MB\n");
     cout << PURPLE("--- User Execution Blueprint ---\n");
     cout << PURPLE("Session ID           : [" << session << "]\n");
-    cout << PURPLE("Context Saving       : " << (temp_chat ? "Temporary (Delete on Exit)" : "PERSISTENT (Saved to SSD)") << "\n\n");
+    cout << PURPLE("Context Saving       : " << (temp_chat ? "Temporary (Delete on Exit)" : "PERSISTENT (Saved to SSD)") << "\n");
+    cout << PURPLE("Memory Quantization  : " << (quantize_memory ? "FP16 (Active)" : "FP32 (Disabled)") << "\n\n");
 
     return allowed_ram_mb;
 }
 
-void TerminalUI::abort_if_overloaded(double override_ram_mb) {
+void TerminalUI::if_overload(double override_ram_mb) {
     auto stats = get_ram_stats_mb(override_ram_mb);
     double total_ram = stats.first;
     double free_ram = stats.second;
@@ -123,7 +124,6 @@ void TerminalUI::abort_if_overloaded(double override_ram_mb) {
         cerr << RED("Aborting FloatLLM execution to prevent system crash.") << endl;
         cerr << RED("TERMINATED DUE TO OVERLOAD") << endl;
         
-        // Use quick_exit or exit to ensure immediate termination and OS cleanup of buffers
         std::exit(1);
     }
 }
@@ -226,6 +226,12 @@ size_t TerminalUI::file_size_bytes(const string& path) {
         throw std::runtime_error("failed to stat model file: " + path);
     }
     return static_cast<size_t>(st.st_size);
+}
+
+void TerminalUI::quantize_memory(float* src, ggml_fp16_t* dst, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        dst[i] = ggml_fp32_to_fp16(src[i]);
+    }
 }
 
 } // namespace floatllm

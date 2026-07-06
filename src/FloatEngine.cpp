@@ -53,9 +53,9 @@ void ComputeEngine::init(const string& backend_name, int total_tensors) {
         backend = ggml_backend_init_by_name(target_hw.c_str(), NULL);
     }
 
-    // If the requested GPU isn't available/installed
+    // if the requested GPU isn't available/installed fall back to CPU
     if (backend == nullptr) {
-        cout << PURPLE("Required hardware" << target_hw << " unavailable. Falling back to CPU.") << endl;
+        cout << PURPLE("Required hardware " << target_hw << " unavailable. Falling back to CPU.") << endl;
         backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, NULL);
     }
 
@@ -66,7 +66,7 @@ void ComputeEngine::init(const string& backend_name, int total_tensors) {
 
     cout << PURPLE("Allocating: " << (dynamic_mem_size / 1024.0 / 1024.0) << "MB for tensors") << endl;
 
-    // Initialize GGML & allocate RAM for "Compute Graph" 
+    // Initialize GGML & allocate RAM for compute graph
     struct ggml_init_params params = {
         /* .mem_size    = */ dynamic_mem_size,
         /* .mem_buffer  = */ NULL,
@@ -124,10 +124,9 @@ void ComputeEngine::map_tensor(const char* tensor_name, int tensor_type, void* r
               << "| Target hardware: " << ggml_backend_name(backend) << endl;
 }
 
-// the actual inference - returns next token id
 int32_t ComputeEngine::forward_pass(int32_t* tokens, int num_tokens) {
 
-    struct ggml_init_params params = {1024 * 1024 * 16, NULL, true}; // NOTE this is great for 405B models due to 16MB allocation!
+    struct ggml_init_params params = {1024 * 1024 * 16, NULL, true}; // TODO need to manage dynamically instead of fix 16Mb allocation
     struct ggml_context* graph_ctx = ggml_init(params);
     struct ggml_cgraph* gf = ggml_new_graph(graph_ctx);
 
@@ -137,14 +136,23 @@ int32_t ComputeEngine::forward_pass(int32_t* tokens, int num_tokens) {
     struct ggml_tensor* token_embd = nullptr;
     struct ggml_tensor* output_weight = nullptr;
 
-    // 1. Prioritize exact standard matches first for predictable behavior
-    if (tensor_registry.count("token_embd.weight")) token_embd = tensor_registry["token_embd.weight"];
-    else if (tensor_registry.count("model.embed_tokens.weight")) token_embd = tensor_registry["model.embed_tokens.weight"];
+    // check if the core tensors are present in the registry
+    if (tensor_registry.count("token_embd.weight")) {
+        token_embd = tensor_registry["token_embd.weight"];
+    }
+    else if (tensor_registry.count("model.embed_tokens.weight")){
+        token_embd = tensor_registry["model.embed_tokens.weight"];
+    }
 
-        if (tensor_registry.count("output.weight")) output_weight = tensor_registry["output.weight"];
-    else if (tensor_registry.count("lm_head.weight")) output_weight = tensor_registry["lm_head.weight"];
+    //check if the output tensor is present in the registry
+    if (tensor_registry.count("output.weight")) {
+        output_weight = tensor_registry["output.weight"];
+    }
+    else if (tensor_registry.count("lm_head.weight")) {
+        output_weight = tensor_registry["lm_head.weight"];
+    }
 
-    // 2. Safe fallback scan (explicitly ignoring internal transformer blocks)
+    // if no core tensors found then fallback to scan the registry for the first occurance of the core tensors
     if (!token_embd || !output_weight) {
         for (auto const& [key, val] : tensor_registry) {
             // Skip attention and feed-forward intermediate layers entirely
@@ -159,8 +167,8 @@ int32_t ComputeEngine::forward_pass(int32_t* tokens, int num_tokens) {
         }
     }
 
-    // 3. Fallback for "Tied Embeddings" (Smaller models reuse embedding weights for the output)
-    if (!output_weight && token_embd) {
+    // fallback for tied embd (Only if the model is explicitly flagged as tied)
+    if (!output_weight && token_embd && tied_embeddings) {
         output_weight = token_embd;
     }
 
@@ -187,7 +195,6 @@ int32_t ComputeEngine::forward_pass(int32_t* tokens, int num_tokens) {
     void* raw_embd_ptr = token_embd->data;
     void* raw_out_ptr = output_weight->data;
 
-    // REVIEW what if the system is lacking up the VRAM ??? Need an fallback maybe!
     // detach pointers so the GPU allocates true VRAM for them
     token_embd->data = nullptr;
     output_weight->data = nullptr;

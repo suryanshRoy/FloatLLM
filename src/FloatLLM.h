@@ -55,6 +55,10 @@ public:
     // fire up the backend and alllocate graph memory
     void init(const string& backend_name, int total_tensors);
 
+    void set_tied_embd(bool tied) {
+        tied_embeddings = tied;
+    }
+
     // cleanup everything - vram, ram, the whole thing
     void shutdown();
 
@@ -78,11 +82,11 @@ private:
     ggml_backend_t backend = nullptr;
     ggml_gallocr_t allocr = nullptr;
     std::unordered_map<string, struct ggml_tensor*> tensor_registry;
+    bool tied_embeddings = false;
 };
 
 
-// Tokenizer - reads vocab from gguf, does encode/decode
-// handles BPE style tokenization
+// handle BPE style tokenization
 class Tokenizer {
 public:
     explicit Tokenizer(const string& path);
@@ -130,12 +134,11 @@ struct CliOptions {
     double ram_limit_gb = -1.0;
     double ram_buffer = 0.20;
     bool temp_chat = false;
+    int max_tokens = 60;
+    bool quantize_memory = false;
 };
 
 
-// Loader - memory maps the gguf file, parses metadata,
-// chunks it into ram-friendly blocks and streams into engine
-// takes a ComputeEngine reference - no global state
 class Loader {
 public:
     Loader(const string& path, double allowed_ram_mb, ComputeEngine& engine);

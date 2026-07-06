@@ -14,7 +14,9 @@ void print_usage(const char* exe) {
               << "  --session-id NAME          Session label for the dashboard\n"
               << "  --temp-chat                Mark session as temporary\n"
               << "  --ram-limit GB             Hard RAM chunk cap in GB\n"
-              << "  --ram-buffer FRACTION      RAM reserve fraction (default 0.20)\n");
+              << "  --ram-buffer FRACTION      RAM reserve fraction (default 0.20)\n"
+              << "  --max-tokens N             Maximum number of tokens to generate (default 60)\n"
+              << "  --quantize-memory          Enable F16 memory quantization (default: disabled, runs FP32)\n");
 }
 
 bool parse_args(int argc, char** argv, CliOptions& opts) {
@@ -50,6 +52,10 @@ bool parse_args(int argc, char** argv, CliOptions& opts) {
             opts.ram_limit_gb = std::stod(need_value("--ram-limit"));
         } else if (arg == "--ram-buffer") {
             opts.ram_buffer = std::stod(need_value("--ram-buffer"));
+        } else if (arg == "--max-tokens") {
+            opts.max_tokens = std::stoi(need_value("--max-tokens"));
+        } else if (arg == "--quantize-memory") {
+            opts.quantize_memory = true;
         } else {
             throw std::runtime_error("unknown argument: " + arg);
         }
