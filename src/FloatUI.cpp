@@ -185,7 +185,7 @@ std::pair<double, double> TerminalUI::get_ram_stats_mb(double override_ram_mb) {
         return {total, override_ram_mb};
     }
 
-    const double free = total * 0.5; // rough estimate when we cant get
+    const double free = total * 0.5; //  FIXME need to fix instead of this assumption!!!!!
     return {total, free};
 
 #else

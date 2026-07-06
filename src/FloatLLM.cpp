@@ -1,4 +1,5 @@
 #include "FloatLLM.h"
+#include <chrono>
 
 int main(int argc, char** argv) {
     try {
@@ -65,6 +66,9 @@ int main(int argc, char** argv) {
         std::vector<int32_t> token_ids = tokenizer.encode(opts.prompt);
         const int max_tokens_to_generate = opts.max_tokens;
 
+        int tokens_generated = 0;
+        auto start_time = std::chrono::high_resolution_clock::now();
+
         for (int step = 0; step < max_tokens_to_generate; ++step) {
             // Safety Guardian: Check for system-wide RAM overload before every single compute step
             floatllm::TerminalUI::if_overload(opts.override_ram_mb);
@@ -79,10 +83,17 @@ int main(int argc, char** argv) {
             cout << "\033[92m" << word << "\033[0m ";
             cout.flush();
             token_ids.push_back(next_token_id);
+            tokens_generated++;
         }
 
+        auto end_time = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> totalT = end_time - start_time;
+        double total_time_sec = totalT.count();
+        double tokens_per_sec = total_time_sec > 0 ? (tokens_generated / total_time_sec) : 0.0;
+
         cout << "\n\n";
-        cout << GREEN("[FloatLLM] Generated first " << max_tokens_to_generate << " tokens in output!") << "\n";
+        cout << GREEN("[FloatLLM] Generated " << tokens_generated << " tokens in output!") << "\n";
+        cout << PURPLE("[FloatLLM] Performance: " << std::fixed << std::setprecision(2) << tokens_per_sec << " token/s (Time: " << total_time_sec << "s)") << "\n";
         cout << "[FloatLLM] --------------------------------------------------------------------------------\n";
         engine.shutdown();
         cout << "[FloatLLM] Closing C++ memory maps...\n";

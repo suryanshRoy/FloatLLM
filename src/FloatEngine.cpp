@@ -24,14 +24,13 @@ string ComputeEngine::resolve_backend(const string& input_name) {
     return input_name; // fallback to CPU
 }
 
-//  engine init & shutdown 
 void ComputeEngine::init(const string& backend_name, int total_tensors) {
     string raw_hw = backend_name;
     string target_hw = resolve_backend(raw_hw);
 
     cout << "Requested backend: [" << target_hw << "]" << endl;
 
-    // Scan all the compiled available drivers
+    // scan for all the compiled available drivers
     ggml_backend_load_all();
     
     // assign the physical hardware
@@ -49,7 +48,7 @@ void ComputeEngine::init(const string& backend_name, int total_tensors) {
         backend = ggml_backend_init_best(); // for automatic best hardware selection
     }
     else {
-        // handle Metal, Vulkan, CUDA, etc.
+        // handle Metal, Vulkan, CUDA, etc
         backend = ggml_backend_init_by_name(target_hw.c_str(), NULL);
     }
 
@@ -102,10 +101,9 @@ void ComputeEngine::shutdown() {
         backend = nullptr;
     }
     tensor_registry.clear();
-    cout << " Engine shut down. VRAM/RAM cleared safely." << endl;
 }
 
-//  tensor operations 
+// tensor ops
 
 void ComputeEngine::map_tensor(const char* tensor_name, int tensor_type, void* raw_memory_pointer,
                                int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3, int chunk_id) {
@@ -191,23 +189,28 @@ int32_t ComputeEngine::forward_pass(int32_t* tokens, int num_tokens) {
     struct ggml_tensor* logits = ggml_mul_mat(graph_ctx, output_weight, current_embeddings);
     ggml_build_forward_expand(gf, logits);
 
+    bool is_cpu = (string(ggml_backend_name(backend)) == "CPU");
+
     // Save the RAM pointers locally
     void* raw_embd_ptr = token_embd->data;
     void* raw_out_ptr = output_weight->data;
 
-    // detach pointers so the GPU allocates true VRAM for them
-    token_embd->data = nullptr;
-    output_weight->data = nullptr;
+    if (!is_cpu) {
+        // detach pointers so the GPU alloc VRAM for them
+        token_embd->data = nullptr;
+        output_weight->data = nullptr;
 
-    // Clear the buffers from the previous loop iteration
-    token_embd->buffer = nullptr;
-    output_weight->buffer = nullptr;
+        // clear the buffers from the previous loop iteration
+        token_embd->buffer = nullptr;
+        output_weight->buffer = nullptr;
+    }
 
     ggml_gallocr_alloc_graph(allocr, gf);
 
-    // upload the zero-copy data into the Hardware VRAM buffer
-    ggml_backend_tensor_set(token_embd, raw_embd_ptr, 0, ggml_nbytes(token_embd));
-    ggml_backend_tensor_set(output_weight, raw_out_ptr, 0, ggml_nbytes(output_weight));
+    if (!is_cpu) {
+        ggml_backend_tensor_set(token_embd, raw_embd_ptr, 0, ggml_nbytes(token_embd));
+        ggml_backend_tensor_set(output_weight, raw_out_ptr, 0, ggml_nbytes(output_weight));
+    }
     ggml_backend_tensor_set(prompt_tensor, tokens, 0, num_tokens * sizeof(int32_t));
 
     // Fire the GPU!
@@ -237,9 +240,11 @@ int32_t ComputeEngine::forward_pass(int32_t* tokens, int num_tokens) {
         }
     }
 
-    // Restore the RAM pointers for nexxt generation loop
-    token_embd->data = raw_embd_ptr;
-    output_weight->data = raw_out_ptr;
+    if (!is_cpu) {
+        // Restore the RAM pointers for nexxt generation loop
+        token_embd->data = raw_embd_ptr;
+        output_weight->data = raw_out_ptr;
+    }
 
     ggml_free(graph_ctx);
     return best_token;
@@ -248,12 +253,31 @@ int32_t ComputeEngine::forward_pass(int32_t* tokens, int num_tokens) {
 string ComputeEngine::detect_hardware() {
 #if defined(__APPLE__)
     return "mps";
+#elif defined(_WIN32)
+    // Check for CUDA on Windows
+    HMODULE hCuda = LoadLibraryA("nvcuda.dll");
+    if (hCuda != nullptr) {
+        FreeLibrary(hCuda);
+        return "cuda";
+    }
+    // Check for Vulkan on Windows
+    HMODULE hVulkan = LoadLibraryA("vulkan-1.dll");
+    if (hVulkan != nullptr) {
+        FreeLibrary(hVulkan);
+        return "vulkan";
+    }
+    return "cpu";
 #elif defined(__ANDROID__)
     if (access("/system/lib64/libvulkan.so", F_OK) == 0 || access("/system/lib/libvulkan.so", F_OK) == 0) {
         return "vulkan_kompute";
     }
     return "native_arm";
 #elif defined(__linux__)
+    // Check for CUDA on Linux
+    if (access("/dev/nvidia0", F_OK) == 0 || access("/dev/nvidiactl", F_OK) == 0) {
+        return "cuda";
+    }
+    // Check for Vulkan on Linux
     if (access("/usr/bin/vulkaninfo", X_OK) == 0 || access("/usr/local/bin/vulkaninfo", X_OK) == 0 ||
         access("/system/lib64/libvulkan.so", F_OK) == 0 || access("/system/lib/libvulkan.so", F_OK) == 0) {
         return "vulkan_kompute";

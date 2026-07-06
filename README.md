@@ -10,7 +10,7 @@ FloatLLM is a inference engine that uses memory-mapping for GGUF models, keeps R
 
 ## Why FloatLLM? 
 
-Most inference engines assume the model fits comfortably in RAM or VRAM. If the model is too large then the device could crash or the inference could fail.
+Most inference engines assume the model can work perfectly in available RAM or VRAM. If the model is too large then the device could crash or the inference could fail.
 
 But FloatLLM prioritizes memory safety and keeps RAM usage bounded while still allowing inference to run on large models even on constrained hardware.
 
