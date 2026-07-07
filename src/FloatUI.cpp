@@ -15,6 +15,9 @@
 #include <sys/mman.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/sysinfo.h>
+#endif
 #endif
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -129,6 +132,12 @@ void TerminalUI::if_overload(double override_ram_mb) {
 }
 
 std::pair<double, double> TerminalUI::get_ram_stats_mb(double override_ram_mb) {
+    // Cache for user manual override to avoid prompting repeatedly during generation
+    static double cached_override = -1.0;
+    if (override_ram_mb >= 0.0) {
+        cached_override = override_ram_mb;
+    }
+
 #ifdef _WIN32
     MEMORYSTATUSEX statex;
     statex.dwLength = sizeof(statex);
@@ -137,8 +146,6 @@ std::pair<double, double> TerminalUI::get_ram_stats_mb(double override_ram_mb) {
         double free_mb = static_cast<double>(statex.ullAvailPhys) / (1024.0 * 1024.0);
         return {total_mb, free_mb};
     }
-    return {0.0, 0.0};
-
 #elif defined(__APPLE__)
     vm_statistics64_data_t vm_stat;
     mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
@@ -148,8 +155,6 @@ std::pair<double, double> TerminalUI::get_ram_stats_mb(double override_ram_mb) {
         const double free = static_cast<double>(vm_stat.free_count + vm_stat.inactive_count) * page_size / (1024.0 * 1024.0);
         return {total, free};
     }
-    return {0.0, 0.0};
-
 #elif defined(__linux__) || ((defined(__unix__)) && !defined(__APPLE__))
     std::ifstream meminfo("/proc/meminfo");
     if (meminfo.is_open()) {
@@ -177,21 +182,68 @@ std::pair<double, double> TerminalUI::get_ram_stats_mb(double override_ram_mb) {
         }
     }
 
-    const long page_size = sysconf(_SC_PAGESIZE);
-    const long phys_pages = sysconf(_SC_PHYS_PAGES);
-    const double total = (page_size > 0 && phys_pages > 0) ? (static_cast<double>(page_size) * static_cast<double>(phys_pages)) / (1024.0 * 1024.0) : 0.0;
-
-    if (override_ram_mb >= 0.0) {
-        return {total, override_ram_mb};
+    struct sysinfo info;
+    if (sysinfo(&info) == 0) {
+        unsigned long long mem_unit = info.mem_unit ? info.mem_unit : 1;
+        double total_mb = static_cast<double>(info.totalram * mem_unit) / (1024.0 * 1024.0);
+        double free_mb = static_cast<double>((info.freeram + info.bufferram) * mem_unit) / (1024.0 * 1024.0);
+        return {total_mb, free_mb};
     }
 
-    const double free = total * 0.5; //  FIXME need to fix instead of this assumption!!!!!
-    return {total, free};
-
-#else
-    return {0.0, 0.0};
-
+    std::ifstream psi("/proc/pressure/memory");
+    if (psi.is_open()) {
+        std::string line;
+        while (std::getline(psi, line)) {
+            if (line.find("some ") == 0) {
+                size_t pos = line.find("avg10=");
+                if (pos != std::string::npos) {
+                    try {
+                        double avg10 = std::stod(line.substr(pos + 6));
+                        if (avg10 >= 30.0) {
+                            const long page_size = sysconf(_SC_PAGESIZE);
+                            const long phys_pages = sysconf(_SC_PHYS_PAGES);
+                            const double total = (page_size > 0 && phys_pages > 0) ? (static_cast<double>(page_size) * static_cast<double>(phys_pages)) / (1024.0 * 1024.0) : 4096.0;
+                            return {total, total * 0.01};
+                        }
+                    } catch (...) {}
+                }
+            }
+        }
+    }
 #endif
+
+    double total = 0.0;
+#ifdef _WIN32
+    MEMORYSTATUSEX statex;
+    statex.dwLength = sizeof(statex);
+    if (GlobalMemoryStatusEx(&statex)) {
+        total = static_cast<double>(statex.ullTotalPhys) / (1024.0 * 1024.0);
+    }
+#else
+    const long page_size = sysconf(_SC_PAGESIZE);
+    const long phys_pages = sysconf(_SC_PHYS_PAGES);
+    total = (page_size > 0 && phys_pages > 0) ? (static_cast<double>(page_size) * static_cast<double>(phys_pages)) / (1024.0 * 1024.0) : 4096.0;
+#endif
+
+    if (cached_override < 0.0) {
+        cout << YELLOW("\nWARNING: System RAM detection failed on all levels.") << endl;
+        cout << YELLOW("Please enter your system's free RAM (in MB) manually to proceed: ");
+        std::string input;
+        if (std::getline(std::cin, input)) { // FIXME since this is entry of cin so need to have the isatty for the non interactive mode
+            try {
+                double val = std::stod(input);
+                if (val >= 0.0) {
+                    cached_override = val;
+                }
+            } catch (...) {}
+        }
+        if (cached_override < 0.0) {
+            cached_override = total > 0.0 ? total * 0.5 : 4096.0;
+            cout << YELLOW("Invalid input. Defaulting to safe estimate: ") << cached_override << " MB" << endl;
+        }
+    }
+
+    return {total > 0.0 ? total : cached_override * 2.0, cached_override};
 }
 
 std::pair<double, double> TerminalUI::get_storage_stats_gb() {

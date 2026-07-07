@@ -16,7 +16,7 @@ int main(int argc, char** argv) {
             selected_backend = floatllm::ComputeEngine::detect_hardware();
         }
 
-        cout << PURPLE("[FloatLLM] Hardware Router engaged: Backend -> [" << selected_backend << "]\n");
+        cout << PURPLE("Hardware Router engaged: Backend -> [" << selected_backend << "]\n");
 
         // grab system stats for the safety checks
         const auto [total_ram_mb, free_ram_mb] = floatllm::TerminalUI::get_ram_stats_mb(opts.override_ram_mb);
@@ -49,7 +49,7 @@ int main(int argc, char** argv) {
         }
         engine.set_tied_embd(!has_output_head);
         if (!has_output_head) {
-            cout << YELLOW("[FloatLLM] No dedicated output head found. Enabling tied-embeddings mode.\n");
+            cout << YELLOW("No dedicated output head found. Enabling tied-embeddings mode.\n");
         }
 
         engine.init(selected_backend, static_cast<int>(tensor_map.size()));
@@ -57,10 +57,9 @@ int main(int argc, char** argv) {
         loader.build_dynamic_chunks(tensor_map);
         loader.stream_all_chunks();
 
-        cout << "[FloatLLM] Engine successfully mapped. Handing to AI...\n";
-        cout << "[FloatLLM] --------------------------------------------------------------------------------\n";
-        cout << "[FloatLLM] \nUser: " << opts.prompt << "\n";
-        cout << "[FloatLLM] ";
+        cout << "Engine successfully mapped. Handing to AI...\n";
+        cout << "--------------------------------------------------------------------------------\n";
+        cout << "\nUser: " << opts.prompt << "\n";
 
         // tokenize and start generating
         std::vector<int32_t> token_ids = tokenizer.encode(opts.prompt);
@@ -92,14 +91,14 @@ int main(int argc, char** argv) {
         double tokens_per_sec = total_time_sec > 0 ? (tokens_generated / total_time_sec) : 0.0;
 
         cout << "\n\n";
-        cout << GREEN("[FloatLLM] Generated " << tokens_generated << " tokens in output!") << "\n";
-        cout << PURPLE("[FloatLLM] Performance: " << std::fixed << std::setprecision(2) << tokens_per_sec << " token/s (Time: " << total_time_sec << "s)") << "\n";
-        cout << "[FloatLLM] --------------------------------------------------------------------------------\n";
+        cout << GREEN("Generated " << tokens_generated << " tokens in output!") << "\n";
+        cout << PURPLE("Performance: " << std::fixed << std::setprecision(2) << tokens_per_sec << " token/s (Time: " << total_time_sec << "s)") << "\n";
+        cout << " --------------------------------------------------------------------------------\n";
         engine.shutdown();
-        cout << "[FloatLLM] Closing C++ memory maps...\n";
+        cout << "Closing C++ memory maps...\n";
         return 0;
     } catch (const std::exception& e) {
-        cerr << RED("[FloatLLM] ERROR: ") << e.what() << "\n";
+        cerr << RED("ERROR: ") << e.what() << "\n";
         return 1;
     }
 }

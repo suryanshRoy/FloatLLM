@@ -1,6 +1,6 @@
-# FloatLLM
+# ![FloatLLM](assets/logo.png)
 
-A memory-aware LLM inference engine for edge devices.
+**A memory-aware LLM inference engine designed for stability and safety.**
 
 FloatLLM is a inference engine that uses memory-mapping for GGUF models, keeps RAM usage bounded, and streams tensors through ggml backends instead of loading the entire model into memory at once into memory.
 

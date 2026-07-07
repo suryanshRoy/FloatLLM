@@ -28,13 +28,13 @@ void Tokenizer::extract_metadata() {
     const int64_t model_key = gguf_find_key(ctx, "tokenizer.ggml.model");
     if (model_key >= 0) {
         model_type = gguf_get_val_str(ctx, model_key);
-        cout << "[FloatLLM] Tokenizer Architecture: " << model_type << "\n";
+        cout << "Tokenizer Architecture: " << model_type << "\n";
     }
 
     bos_token_id = static_cast<int32_t>(read_scalar_integer(ctx, "tokenizer.ggml.bos_token_id"));
     eos_token_id = static_cast<int32_t>(read_scalar_integer(ctx, "tokenizer.ggml.eos_token_id"));
 
-    cout << "[FloatLLM] BOS ID: " << bos_token_id << " | EOS ID: " << eos_token_id << "\n";
+    cout << "BOS ID: " << bos_token_id << " | EOS ID: " << eos_token_id << "\n";
 
     const int64_t tokens_key = gguf_find_key(ctx, "tokenizer.ggml.tokens");
     if (tokens_key < 0) {
@@ -50,7 +50,7 @@ void Tokenizer::extract_metadata() {
         token_to_id[token] = static_cast<int32_t>(vocab.size() - 1);
     }
 
-    cout << "[FloatLLM] Successfully extracted " << vocab.size()
+    cout << "Successfully extracted " << vocab.size()
               << " offline tokens into memory\n";
 }
 

@@ -137,7 +137,7 @@ Loader::~Loader() {
 }
 
 std::vector<TensorInfo> Loader::parse_gguf_metadata() const {
-    cout << "[FloatLLM] Scanning GGUF metadata for building " << model_path << "...\n";
+    cout << "Scanning GGUF metadata for building " << model_path << "...\n";
     std::vector<TensorInfo> tensors;
     const int64_t n_tensors = gguf_get_n_tensors(gguf_ctx);
     tensors.reserve(static_cast<size_t>(n_tensors));
@@ -160,7 +160,7 @@ std::vector<TensorInfo> Loader::parse_gguf_metadata() const {
         tensors.push_back(std::move(info));
     }
 
-    cout << "[FloatLLM] Discovered " << tensors.size() << " individual tensors in the model architecture.\n";
+    cout << "Discovered " << tensors.size() << " individual tensors in the model architecture.\n";
     return tensors;
 }
 
@@ -169,7 +169,7 @@ void Loader::set_allowed_ram_mb(double mb) {
 }
 
 void Loader::build_dynamic_chunks(const std::vector<TensorInfo>& tensors) {
-    cout << "[FloatLLM] Chucking Engine Active. Max RAM per block: "
+    cout << "Chunking Engine Active. Max RAM per block: "
               << (allowed_ram_bytes / (1024.0 * 1024.0)) << " MB\n";
 
     current_chunk.clear();
@@ -194,7 +194,7 @@ void Loader::build_dynamic_chunks(const std::vector<TensorInfo>& tensors) {
         chunks.push_back({static_cast<int>(chunks.size() + 1), current_chunk, current_chunk_size});
     }
 
-    cout << "[FloatLLM] Model succesfuly sliced into " << chunks.size() << " dynamic blocks\n";
+    cout << "Model succesfuly sliced into " << chunks.size() << " dynamic blocks\n";
 }
 
 void Loader::stream_all_chunks() const {

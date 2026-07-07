@@ -10,7 +10,7 @@ FetchContent_Declare(
     GIT_TAG        ${GGML_GIT_TAG}
 )
 
-message(STATUS "[FloatLLM] Fetching GGML version: ${GGML_GIT_TAG}...")
+message(STATUS "Fetching GGML version: ${GGML_GIT_TAG}...")
 FetchContent_MakeAvailable(ggml)
 
 set(CMAKE_CXX_STANDARD 17)
