@@ -2,8 +2,6 @@
 
 namespace floatllm {
 
-//  CLI stuff 
-
 void print_usage(const char* exe) {
     cout << GREEN("Usage: " << exe << " --model-path MODEL.gguf --prompt \"text\" [options]\n"
               << "Options:\n"
@@ -19,6 +17,7 @@ void print_usage(const char* exe) {
               << "  --quantize-memory          Enable F16 memory quantization (default: disabled, runs FP32)\n");
 }
 
+// cli flags parser
 bool parse_args(int argc, char** argv, CliOptions& opts) {
     for (int i = 1; i < argc; ++i) {
         const string arg = argv[i];
@@ -70,8 +69,7 @@ bool parse_args(int argc, char** argv, CliOptions& opts) {
     return true;
 }
 
-//  Loader class 
-
+// constructor for mmap
 Loader::Loader(const string& path, double allowed_ram_mb, ComputeEngine& eng)
     : model_path(path), allowed_ram_bytes(static_cast<size_t>(allowed_ram_mb * 1024.0 * 1024.0)), engine(eng) {
     struct stat st_check {};
@@ -132,6 +130,7 @@ Loader::Loader(const string& path, double allowed_ram_mb, ComputeEngine& eng)
     }
 }
 
+// Destructor
 Loader::~Loader() {
     cleanup();
 }

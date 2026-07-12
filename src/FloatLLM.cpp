@@ -58,7 +58,7 @@ int main(int argc, char** argv) {
         loader.stream_all_chunks();
 
         cout << "Engine successfully mapped. Handing to AI...\n";
-        cout << "--------------------------------------------------------------------------------\n";
+        lineSep();
         cout << "\nUser: " << opts.prompt << "\n";
 
         // tokenize and start generating
@@ -93,7 +93,7 @@ int main(int argc, char** argv) {
         cout << "\n\n";
         cout << GREEN("Generated " << tokens_generated << " tokens in output!") << "\n";
         cout << PURPLE("Performance: " << std::fixed << std::setprecision(2) << tokens_per_sec << " token/s (Time: " << total_time_sec << "s)") << "\n";
-        cout << " --------------------------------------------------------------------------------\n";
+        lineSep();
         engine.shutdown();
         cout << "Closing C++ memory maps...\n";
         return 0;

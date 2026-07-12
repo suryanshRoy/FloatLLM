@@ -34,7 +34,6 @@
 extern "C" ggml_backend_t ggml_backend_metal_init(void);
 #endif
 
-// NOTE I use these convensions for my ease
 using std::cout;
 using std::cerr;
 using std::endl;
@@ -176,9 +175,11 @@ private:
     std::vector<Chunk> chunks;
 };
 
-
 //  CLI helpers 
 void print_usage(const char* exe);
 bool parse_args(int argc, char** argv, CliOptions& opts);
+void lineSep();
+inline void linesep() { lineSep(); }
 
 } // namespace floatllm
+using floatllm::lineSep;

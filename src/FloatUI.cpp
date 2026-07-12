@@ -11,10 +11,12 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <io.h>
 #else
 #include <sys/mman.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
 #ifdef __linux__
 #include <sys/sysinfo.h>
 #endif
@@ -62,16 +64,19 @@ double TerminalUI::check_threshold(double current_ram_mb, double crash_threshold
     }
 
     if (trusted_free_gb > 0.0 && model_size_gb > trusted_free_gb) {
-        cerr << RED("\n--------------------------------------------------------------------------------\n");
+        cerr << RED("\n");
+        lineSep();
         cerr << RED("ERROR: Model requires " << fmt2(model_size_gb)
                   << "GB, but only " << fmt2(trusted_free_gb) << " GB is free.\n");
         cerr << RED("Halting to prevent storage corruption.\n");
-        cerr << RED("--------------------------------------------------------------------------------\n\n");
+        lineSep();
+        cerr << RED("\n");
         std::exit(1);
     }
 
     if (current_ram_mb <= crash_threshold_mb) {
-        cerr << RED("\n--------------------------------------------------------------------------------\n");
+        cerr << RED("\n");
+        lineSep();
         cerr << RED("OOM Failsafe triggered to stop crashing/freezing of device.\n");
         cerr << RED("ERROR: Free RAM (" << fmt2(current_ram_mb)
                   << "MB) hit the crash threshold (" << fmt2(crash_threshold_mb) << " MB).\n");
@@ -81,7 +86,8 @@ double TerminalUI::check_threshold(double current_ram_mb, double crash_threshold
         }
         cerr << PURPLE("Halting execution gracefully.\n");
         cerr << PURPLE("Adjust [--crash-threshold] or increase [--ram-limit] for more headroom.\n");
-        cerr << PURPLE("--------------------------------------------------------------------------------\n\n");
+        lineSep();
+        cerr << PURPLE("\n");
         std::exit(1);
     }
 
@@ -226,20 +232,37 @@ std::pair<double, double> TerminalUI::get_ram_stats_mb(double override_ram_mb) {
 #endif
 
     if (cached_override < 0.0) {
-        cout << YELLOW("\nWARNING: System RAM detection failed on all levels.") << endl;
-        cout << YELLOW("Please enter your system's free RAM (in MB) manually to proceed: ");
-        std::string input;
-        if (std::getline(std::cin, input)) { // FIXME since this is entry of cin so need to have the isatty for the non interactive mode
-            try {
-                double val = std::stod(input);
-                if (val >= 0.0) {
-                    cached_override = val;
+        bool is_tty = false;
+#ifdef _WIN32
+        is_tty = (_isatty(_fileno(stdin)) != 0);
+#else
+        is_tty = (isatty(0) != 0);
+#endif
+
+        if (!is_tty) {
+            cerr << YELLOW("\nWarning: System RAM detection failed on all levels and a non-interactive terminal was detected.") << endl;
+            cerr << YELLOW("Please specify your device free RAM manually using the '--override-ram-mb <MB>' CLI option.") << endl;
+            cerr << YELLOW("Aborting execution...") << endl;
+            std::exit(1);
+        } else {
+            cout << YELLOW("\nWARNING: System RAM detection failed, no API were detected!") << endl;
+            cout << YELLOW("Please enter your system's free RAM (in MB) manually to proceed: ");
+            std::string input;
+            if (std::getline(std::cin, input)) {
+                try {
+                    double val = std::stod(input);
+                    if (val >= 0.0) {
+                        cached_override = val;
+                    }
+                } catch (const std::exception& e) {
+                    cerr << RED("Invalid input. Please enter a valid number for free RAM in MB.") << endl;
+                    exit(1);
                 }
-            } catch (...) {}
-        }
-        if (cached_override < 0.0) {
-            cached_override = total > 0.0 ? total * 0.5 : 4096.0;
-            cout << YELLOW("Invalid input. Defaulting to safe estimate: ") << cached_override << " MB" << endl;
+            }
+            if (cached_override < 0.0) {
+                cached_override = total > 0.0 ? total * 0.5 : 4096.0;
+                cout << YELLOW("Invalid input. Defaulting to safe estimate: ") << cached_override << " MB" << endl;
+            }
         }
     }
 
@@ -284,6 +307,22 @@ void TerminalUI::quantize_memory(float* src, ggml_fp16_t* dst, size_t count) {
     for (size_t i = 0; i < count; ++i) {
         dst[i] = ggml_fp32_to_fp16(src[i]);
     }
+}
+
+void lineSep() { // line separator
+    int width = 80;
+#ifdef _WIN32
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi)) {
+        width = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+    }
+#else
+    struct winsize w;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0) {
+        width = w.ws_col;
+    }
+#endif
+    std::cout << std::string(std::max(0, width - 2), '-') << "\n";
 }
 
 } // namespace floatllm
